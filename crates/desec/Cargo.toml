@@ -1,0 +1,17 @@
+[package]
+name = "desec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "deSEC.io DNS API client library"
+readme = "../../README.md"
+keywords = ["dns", "desec", "dnssec"]
+categories = ["network-programming"]
+
+[lints]
+workspace = true
+
+[dependencies]
