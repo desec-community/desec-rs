@@ -6,11 +6,18 @@
 {
   lib,
   rustPlatform,
+  cacert,
   ...
 }:
 rustPlatform.buildRustPackage {
   pname = "desec";
   version = "0.0.1";
+
+  # reqwest's rustls backend loads the system trust store when a client is constructed,
+  # not when a request is made, so every test that builds a Client fails in the sandbox
+  # with "No CA certificates were loaded from the system". The mock tests only ever talk
+  # to loopback over plain HTTP; this is purely to get past client construction.
+  SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
 
   # Naming the inputs explicitly keeps target/ and .direnv/ out of the store, and
   # means an unrelated edit does not invalidate the build.
