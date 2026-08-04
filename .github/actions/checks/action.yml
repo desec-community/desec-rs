@@ -1,0 +1,46 @@
+# The full check suite, as individually named steps.
+#
+# The single source of truth for what CI verifies: the push/PR workflow and the release
+# workflow both run this, so a tag cannot publish something that would have failed on main.
+#
+# Deliberately not a single `just ci` call. The recipe is the local entry point, but here
+# one step per check is what makes a red run legible at a glance.
+name: Run checks
+description: Run formatting, lint, test, doc and packaging checks in the Nix dev shell.
+
+runs:
+  using: composite
+  steps:
+    - name: Check formatting
+      shell: bash
+      run: nix develop -c just fmt-check
+
+    - name: Clippy
+      shell: bash
+      run: nix develop -c just lint
+
+    - name: Test
+      shell: bash
+      run: nix develop -c just test
+
+    - name: Build
+      shell: bash
+      run: nix develop -c just build
+
+    - name: Documentation
+      shell: bash
+      run: nix develop -c just doc
+
+    - name: Check README.md is up to date
+      shell: bash
+      run: nix develop -c just readme-check
+
+    - name: Lockfile check
+      shell: bash
+      run: nix develop -c cargo metadata --locked --format-version 1 > /dev/null
+
+    # Ahead of any publish, so a manifest or include/exclude mistake surfaces while it is
+    # still reversible.
+    - name: Package check
+      shell: bash
+      run: nix develop -c cargo package --locked --workspace
