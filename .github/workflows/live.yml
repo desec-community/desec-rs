@@ -1,0 +1,31 @@
+name: Live API tests
+
+# Manual only. These tests create and delete real domains, tokens and records in whatever
+# account DESEC_TOKEN belongs to, and they spend that account's rate-limit budget, so they
+# must never fire from a push or a pull request.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    # Serialised, because concurrent runs would share one account's per-domain budget and
+    # each other's scratch-domain sweep.
+    concurrency:
+      group: live-api-tests
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, 2026-07-17
+
+      - uses: ./.github/actions/setup-nix
+
+      - name: Run the live API tests
+        env:
+          DESEC_TOKEN: ${{ secrets.DESEC_TOKEN }}
+          DESEC_TEST_PARENT: ${{ vars.DESEC_TEST_PARENT }}
+        run: nix develop -c just live-test

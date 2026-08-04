@@ -18,6 +18,15 @@ lint:
 test:
     cargo test --all-features
 
+# Run the tests that talk to the real API. Needs DESEC_TOKEN from a test account with
+# perm_create_domain, perm_delete_domain and perm_manage_tokens. Override the parent zone
+# for scratch domains with DESEC_TEST_PARENT (default dedyn.io).
+#
+# These are #[ignore]d so `just test` and CI skip them; --ignored is what opts in. The
+# thread cap bounds how many scratch domains exist at once, against limit_domains.
+live-test *args='':
+    cargo test --test live -- --ignored --nocapture --test-threads 4 {{args}}
+
 # Build release
 build:
     cargo build --release --all-features
