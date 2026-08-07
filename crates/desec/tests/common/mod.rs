@@ -3,8 +3,7 @@
 //! Every test runs against a [`wiremock`] server mounted at `/api/v1`, so the paths the
 //! client builds are the real ones. Client-side rate limits are off and retries are
 //! disabled unless a test asks otherwise, so nothing here sleeps.
-
-#![allow(dead_code)]
+#![allow(clippy::expect_used, dead_code)]
 
 use std::time::Duration;
 

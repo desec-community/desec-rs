@@ -1,5 +1,5 @@
 //! Mocked coverage of the `/domains/` endpoints, asserting request bodies and queries.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
 
 mod common;
 

@@ -1,5 +1,5 @@
 //! Cursor pagination over a real HTTP round trip.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
 
 mod common;
 
@@ -57,7 +57,7 @@ fn subnames(items: &[Rrset]) -> Vec<&str> {
 
 /// The decoded query pairs of the most recent request.
 async fn last_query(server: &MockServer) -> Vec<(String, String)> {
-    let requests = server.received_requests().await.unwrap();
+    let requests = server.received_requests().await.expect("recorded requests");
     requests
         .last()
         .expect("a request reached the server")
@@ -79,7 +79,7 @@ async fn a_response_without_a_link_header_is_a_single_page() {
         .mount(&server)
         .await;
 
-    let page = client.rrsets(DOMAIN).list().send().await.unwrap();
+    let page = client.rrsets(DOMAIN).list().send().await.expect("a page");
 
     assert!(page.next.is_none());
     assert!(!page.has_next());
@@ -95,7 +95,7 @@ async fn the_first_page_is_requested_with_an_empty_cursor() {
         .mount(&server)
         .await;
 
-    client.rrsets(DOMAIN).list().send().await.unwrap();
+    client.rrsets(DOMAIN).list().send().await.expect("a page");
 
     // Dropping the parameter instead of sending it empty is what makes the API answer
     // `400 Pagination required` once a zone outgrows one page.
@@ -111,7 +111,7 @@ async fn a_first_page_exposes_the_next_and_first_cursors() {
         .mount(&server)
         .await;
 
-    let page = client.rrsets(DOMAIN).list().send().await.unwrap();
+    let page = client.rrsets(DOMAIN).list().send().await.expect("a page");
 
     assert!(page.has_next());
     assert_eq!(page.next.as_ref().map(Cursor::as_str), Some("p2"));
@@ -133,7 +133,7 @@ async fn a_saved_cursor_resumes_at_that_page() {
         .cursor("p2")
         .send()
         .await
-        .unwrap();
+        .expect("a page");
 
     assert_eq!(last_query(&server).await, vec![pair("cursor", "p2")]);
     assert_eq!(subnames(&page.items), ["b"]);
@@ -160,7 +160,7 @@ async fn all_walks_every_page_exactly_once() {
         .mount(&server)
         .await;
 
-    let items = client.rrsets(DOMAIN).list().all().await.unwrap();
+    let items = client.rrsets(DOMAIN).list().all().await.expect("all items");
 
     assert_eq!(subnames(&items), ["a", "b", "c", "d", "e"]);
     server.verify().await;
@@ -188,7 +188,7 @@ async fn stream_yields_items_across_pages_in_order() {
         .stream()
         .try_collect()
         .await
-        .unwrap();
+        .expect("all items");
 
     assert_eq!(subnames(&items), ["a", "b", "c", "d", "e"]);
 }
@@ -208,7 +208,7 @@ async fn stream_does_not_fetch_a_page_nobody_consumed() {
         .await;
 
     let mut items = client.rrsets(DOMAIN).list().stream();
-    let first = items.next().await.unwrap().unwrap();
+    let first = items.next().await.expect("a first item").expect("it is ok");
     drop(items);
 
     // Stopping early has to cost nothing, or streaming a zone of unknown size would be no
@@ -239,7 +239,7 @@ async fn filters_are_resent_on_every_page() {
         .record_type(&RecordType::A)
         .all()
         .await
-        .unwrap();
+        .expect("all items");
 
     // A filter lost on page two would silently widen the result set.
     assert_eq!(subnames(&items), ["a", "b"]);
@@ -255,7 +255,7 @@ async fn a_percent_encoded_comma_stays_inside_one_cursor() {
         .mount(&server)
         .await;
 
-    let page = client.rrsets(DOMAIN).list().send().await.unwrap();
+    let page = client.rrsets(DOMAIN).list().send().await.expect("a page");
 
     assert_eq!(page.next.as_ref().map(Cursor::as_str), Some("a,b"));
 }
@@ -275,7 +275,7 @@ async fn the_long_spelling_of_previous_populates_prev() {
         .cursor("p2")
         .send()
         .await
-        .unwrap();
+        .expect("a page");
 
     assert_eq!(page.prev.as_ref().map(Cursor::as_str), Some("p1"));
 }
@@ -289,7 +289,7 @@ async fn a_link_without_a_cursor_is_ignored() {
         .mount(&server)
         .await;
 
-    let page = client.rrsets(DOMAIN).list().send().await.unwrap();
+    let page = client.rrsets(DOMAIN).list().send().await.expect("a page");
 
     assert!(page.next.is_none());
 }
@@ -302,14 +302,22 @@ async fn an_empty_page_terminates_both_consumers() {
         .mount(&server)
         .await;
 
-    assert!(client.rrsets(DOMAIN).list().all().await.unwrap().is_empty());
+    assert!(
+        client
+            .rrsets(DOMAIN)
+            .list()
+            .all()
+            .await
+            .expect("all items")
+            .is_empty()
+    );
     let items: Vec<Rrset> = client
         .rrsets(DOMAIN)
         .list()
         .stream()
         .try_collect()
         .await
-        .unwrap();
+        .expect("all items");
     assert!(items.is_empty());
 }
 
@@ -328,14 +336,29 @@ async fn an_error_on_a_later_page_reaches_the_caller() {
         .mount(&server)
         .await;
 
-    let err = client.rrsets(DOMAIN).list().all().await.unwrap_err();
+    let err = client
+        .rrsets(DOMAIN)
+        .list()
+        .all()
+        .await
+        .expect_err("the cursor is invalid");
     assert!(err.is_validation(), "{err:?}");
 
     let mut items = client.rrsets(DOMAIN).list().stream();
     assert_eq!(
-        items.next().await.unwrap().unwrap().subname.as_payload(),
+        items
+            .next()
+            .await
+            .expect("a first item")
+            .expect("it is ok")
+            .subname
+            .as_payload(),
         "a"
     );
-    let err = items.next().await.unwrap().unwrap_err();
+    let err = items
+        .next()
+        .await
+        .expect("a second item")
+        .expect_err("the cursor is invalid");
     assert!(err.is_validation(), "{err:?}");
 }

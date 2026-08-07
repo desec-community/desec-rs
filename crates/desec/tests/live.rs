@@ -22,8 +22,7 @@
 //!
 //! Account operations with side effects outside the API — password reset, email change,
 //! account deletion — are deliberately absent. They cannot be undone by a test.
-
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

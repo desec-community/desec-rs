@@ -1,5 +1,5 @@
 //! Mocked tests for `/auth/tokens/` and its RRset scoping policies.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
 
 mod common;
 
@@ -18,11 +18,11 @@ const POLICY_ID: &str = "7aed3f71-bc81-4f7e-90ae-8f0df0d1c211";
 const OTHER_POLICY_ID: &str = "1b4a6f26-6f8d-4a25-9f3a-2a0dcb3e7c11";
 
 fn token_id() -> Uuid {
-    TOKEN_ID.parse().unwrap()
+    TOKEN_ID.parse().expect("valid uuid")
 }
 
 fn policy_id() -> Uuid {
-    POLICY_ID.parse().unwrap()
+    POLICY_ID.parse().expect("valid uuid")
 }
 
 fn tokens_path() -> String {
@@ -61,7 +61,7 @@ async fn creating_a_token_discloses_the_secret_but_keeps_it_out_of_debug() {
         .tokens()
         .create(&TokenUpdate::new().name("my token"))
         .await
-        .unwrap();
+        .expect("a token");
 
     assert_eq!(token.token.as_ref().map(Secret::expose), Some(TOKEN));
     // Tokens get logged for auditing, so the one disclosure must not become two.
@@ -97,7 +97,7 @@ async fn a_provisioning_token_gets_its_domain_permissions_at_creation() {
                 .perm_delete_domain(true),
         )
         .await
-        .unwrap();
+        .expect("a token");
 }
 
 #[tokio::test]
@@ -127,7 +127,7 @@ async fn token_lifetimes_go_on_the_wire_as_django_durations() {
                 .max_unused_period(DjangoDuration::hours(1)),
         )
         .await
-        .unwrap();
+        .expect("a token");
 }
 
 #[tokio::test]
@@ -157,7 +157,7 @@ async fn creating_a_token_can_restrict_subnets_and_enable_auto_policy() {
                 .auto_policy(true),
         )
         .await
-        .unwrap();
+        .expect("a token");
 }
 
 #[tokio::test]
@@ -176,7 +176,11 @@ async fn creating_a_token_without_any_settings_posts_an_empty_object() {
         .mount(&server)
         .await;
 
-    client.tokens().create(&TokenUpdate::new()).await.unwrap();
+    client
+        .tokens()
+        .create(&TokenUpdate::new())
+        .await
+        .expect("a token");
 }
 
 #[tokio::test]
@@ -195,7 +199,12 @@ async fn listing_tokens_sends_an_empty_cursor_and_yields_no_secrets() {
         .mount(&server)
         .await;
 
-    let page = client.tokens().list().send().await.unwrap();
+    let page = client
+        .tokens()
+        .list()
+        .send()
+        .await
+        .expect("a page of tokens");
 
     assert_eq!(page.items.len(), 2);
     assert!(page.items.iter().all(|token| token.token.is_none()));
@@ -216,8 +225,8 @@ async fn getting_a_token_addresses_it_by_lowercase_hyphenated_uuid() {
         .await;
 
     // Parsed from the uppercase spelling, to pin that the path is not built from Debug.
-    let id: Uuid = TOKEN_ID.to_uppercase().parse().unwrap();
-    let token = client.tokens().get(id).await.unwrap();
+    let id: Uuid = TOKEN_ID.to_uppercase().parse().expect("valid uuid");
+    let token = client.tokens().get(id).await.expect("a token");
 
     assert_eq!(token.id, token_id());
     assert_eq!(token.name, "my token");
@@ -234,7 +243,14 @@ async fn try_get_maps_a_missing_token_onto_none() {
         .mount(&server)
         .await;
 
-    assert!(client.tokens().try_get(token_id()).await.unwrap().is_none());
+    assert!(
+        client
+            .tokens()
+            .try_get(token_id())
+            .await
+            .expect("a lookup")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -254,7 +270,7 @@ async fn renaming_a_token_leaves_its_permissions_untouched() {
         .tokens()
         .patch(token_id(), &TokenUpdate::new().name("x"))
         .await
-        .unwrap();
+        .expect("a token");
 }
 
 #[tokio::test]
@@ -274,7 +290,7 @@ async fn clearing_a_token_lifetime_sends_an_explicit_null() {
         .tokens()
         .patch(token_id(), &TokenUpdate::new().clear_max_age())
         .await
-        .unwrap();
+        .expect("a token");
 }
 
 #[tokio::test]
@@ -293,7 +309,7 @@ async fn patching_nothing_sends_an_empty_object() {
         .tokens()
         .patch(token_id(), &TokenUpdate::new())
         .await
-        .unwrap();
+        .expect("a token");
 }
 
 #[tokio::test]
@@ -312,7 +328,7 @@ async fn revoking_domain_creation_sends_false_rather_than_omitting_it() {
         .tokens()
         .patch(token_id(), &TokenUpdate::new().perm_create_domain(false))
         .await
-        .unwrap();
+        .expect("a token");
 }
 
 #[tokio::test]
@@ -331,7 +347,7 @@ async fn replacing_a_token_uses_put() {
         .tokens()
         .replace(token_id(), &TokenUpdate::new().name("reset"))
         .await
-        .unwrap();
+        .expect("a token");
 }
 
 #[tokio::test]
@@ -345,7 +361,11 @@ async fn deleting_a_token_accepts_a_204() {
         .mount(&server)
         .await;
 
-    client.tokens().delete(token_id()).await.unwrap();
+    client
+        .tokens()
+        .delete(token_id())
+        .await
+        .expect("a deletion");
 }
 
 #[tokio::test]
@@ -365,11 +385,11 @@ async fn patching_without_permission_surfaces_as_forbidden() {
         .tokens()
         .patch(token_id(), &TokenUpdate::new().name("x"))
         .await
-        .unwrap_err();
+        .expect_err("forbidden");
 
     assert!(err.is_forbidden(), "{err:?}");
     assert_eq!(
-        err.api_error().unwrap().detail(),
+        err.api_error().expect("an api error").detail(),
         Some("You do not have permission to perform this action.")
     );
 }
@@ -396,7 +416,12 @@ async fn listing_policies_sends_no_cursor_because_the_endpoint_is_unpaginated() 
         .mount(&server)
         .await;
 
-    let policies = client.tokens().policies(token_id()).list().await.unwrap();
+    let policies = client
+        .tokens()
+        .policies(token_id())
+        .list()
+        .await
+        .expect("the policies");
 
     assert_eq!(policies.len(), 2);
     assert!(policies[0].is_default());
@@ -429,7 +454,7 @@ async fn the_default_policy_posts_all_three_selectors_as_null() {
         .policies(token_id())
         .create(&NewTokenPolicy::default_policy(true))
         .await
-        .unwrap();
+        .expect("the policy");
 
     assert!(policy.is_default());
 }
@@ -462,7 +487,7 @@ async fn a_domain_scoped_policy_keeps_its_wildcard_selectors_on_the_wire() {
         .policies(token_id())
         .create(&NewTokenPolicy::for_domain("example.com", true).record_type(RecordType::TXT))
         .await
-        .unwrap();
+        .expect("the policy");
 
     assert_eq!(policy.record_type, Some(RecordType::TXT));
 }
@@ -496,7 +521,7 @@ async fn an_apex_scoped_policy_sends_the_apex_as_an_empty_string() {
         .policies(token_id())
         .create(&NewTokenPolicy::for_domain("example.com", false).subname(Subname::apex()))
         .await
-        .unwrap();
+        .expect("the policy");
 
     assert_eq!(policy.subname.as_ref().map(Subname::as_payload), Some(""));
 }
@@ -519,11 +544,11 @@ async fn a_second_default_policy_is_rejected_under_non_field_errors() {
         .policies(token_id())
         .create(&NewTokenPolicy::default_policy(true))
         .await
-        .unwrap_err();
+        .expect_err("the policy is rejected");
 
     assert!(err.is_validation(), "{err:?}");
     assert_eq!(
-        err.api_error().unwrap().non_field_errors(),
+        err.api_error().expect("an api error").non_field_errors(),
         vec!["Cannot create multiple default policies."]
     );
 }
@@ -550,7 +575,7 @@ async fn getting_a_policy_addresses_it_below_its_token() {
         .policies(token_id())
         .get(policy_id())
         .await
-        .unwrap();
+        .expect("the policy");
 
     assert_eq!(policy.id, policy_id());
     assert_eq!(policy.domain.as_deref(), Some("example.com"));
@@ -573,7 +598,7 @@ async fn try_get_maps_a_missing_policy_onto_none() {
             .policies(token_id())
             .try_get(policy_id())
             .await
-            .unwrap()
+            .expect("a lookup")
             .is_none()
     );
 }
@@ -602,7 +627,7 @@ async fn revoking_write_permission_on_a_policy_sends_only_perm_write_false() {
         .policies(token_id())
         .patch(policy_id(), &TokenPolicyPatch::new().perm_write(false))
         .await
-        .unwrap();
+        .expect("the policy");
 
     assert!(!policy.perm_write);
 }
@@ -631,7 +656,7 @@ async fn rescoping_a_policy_does_not_resend_its_write_permission() {
         .policies(token_id())
         .patch(policy_id(), &TokenPolicyPatch::new().domain("x"))
         .await
-        .unwrap();
+        .expect("the policy");
 
     assert!(policy.perm_write);
 }
@@ -656,7 +681,7 @@ async fn widening_a_policy_to_any_domain_sends_a_null_domain() {
         .policies(token_id())
         .patch(policy_id(), &TokenPolicyPatch::new().any_domain())
         .await
-        .unwrap();
+        .expect("the policy");
 }
 
 #[tokio::test]
@@ -690,7 +715,7 @@ async fn replacing_a_policy_uses_put() {
             &NewTokenPolicy::for_domain("example.com", false),
         )
         .await
-        .unwrap();
+        .expect("the policy");
 }
 
 #[tokio::test]
@@ -709,7 +734,7 @@ async fn deleting_a_policy_accepts_a_204() {
         .policies(token_id())
         .delete(policy_id())
         .await
-        .unwrap();
+        .expect("a deletion");
 }
 
 #[tokio::test]
@@ -734,7 +759,7 @@ async fn a_policy_scoped_to_a_subname_with_any_type_round_trips() {
         .policies(token_id())
         .get(policy_id())
         .await
-        .unwrap();
+        .expect("the policy");
 
     assert_eq!(
         policy.subname.as_ref().map(Subname::as_payload),

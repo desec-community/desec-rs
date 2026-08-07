@@ -142,7 +142,6 @@
 //! upstream.
 
 #![warn(missing_docs)]
-#![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod api;
 mod client;

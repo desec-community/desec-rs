@@ -307,6 +307,8 @@ fn split_links(raw: &str) -> Vec<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use reqwest::StatusCode;
     use reqwest::header::HeaderMap;

@@ -1,5 +1,5 @@
 //! The dynDNS update protocol, whose whole surface is the query string.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
 
 mod common;
 
@@ -21,7 +21,7 @@ fn dyndns_client(server: &MockServer) -> DynDnsClient {
         .rate_limits(RateLimits::unlimited())
         .max_retries(0)
         .build()
-        .unwrap()
+        .expect("valid client")
 }
 
 /// A server that answers every update with the protocol's success body.
@@ -45,7 +45,7 @@ fn query_of(request: &Request) -> Vec<(String, String)> {
 }
 
 async fn last_query(server: &MockServer) -> Vec<(String, String)> {
-    let requests = server.received_requests().await.unwrap();
+    let requests = server.received_requests().await.expect("recorded requests");
     query_of(requests.last().expect("a request reached the server"))
 }
 
@@ -57,7 +57,11 @@ fn pair(key: &str, value: &str) -> (String, String) {
 async fn a_bare_update_sends_only_the_hostname() {
     let server = good_server().await;
 
-    dyndns_client(&server).update(HOST).send().await.unwrap();
+    dyndns_client(&server)
+        .update(HOST)
+        .send()
+        .await
+        .expect("updates");
 
     // Omitting both address parameters is how the server is told to use the address it saw
     // the request arrive from; sending them empty would delete the records instead.
@@ -72,7 +76,7 @@ async fn the_response_body_is_returned_verbatim() {
         .update(HOST)
         .send_body()
         .await
-        .unwrap();
+        .expect("updates");
 
     assert_eq!(body, "good");
 }
@@ -86,7 +90,7 @@ async fn an_ipv4_address_goes_in_myipv4() {
         .ipv4(IpUpdate::set(["1.2.3.4"]))
         .send()
         .await
-        .unwrap();
+        .expect("updates");
 
     assert_eq!(
         last_query(&server).await,
@@ -103,7 +107,7 @@ async fn an_ipv6_address_goes_in_myipv6() {
         .ipv6(IpUpdate::set(["2001:db8::1"]))
         .send()
         .await
-        .unwrap();
+        .expect("updates");
 
     assert_eq!(
         last_query(&server).await,
@@ -120,7 +124,7 @@ async fn several_addresses_join_with_commas() {
         .ipv4(IpUpdate::set(["1.2.3.4", "5.6.7.8"]))
         .send()
         .await
-        .unwrap();
+        .expect("updates");
 
     assert_eq!(
         last_query(&server).await,
@@ -137,7 +141,7 @@ async fn preserve_is_spelled_out() {
         .ipv4(IpUpdate::Preserve)
         .send()
         .await
-        .unwrap();
+        .expect("updates");
 
     assert_eq!(
         last_query(&server).await,
@@ -154,7 +158,7 @@ async fn remove_is_an_empty_value() {
         .ipv4(IpUpdate::Remove)
         .send()
         .await
-        .unwrap();
+        .expect("updates");
 
     // `myipv4=` is the protocol's delete; dropping the parameter would instead let the
     // server fill the record in from the connection address.
@@ -173,7 +177,7 @@ async fn a_delegated_prefix_passes_through_unchanged() {
         .ipv6(IpUpdate::set(["2a01:a:b:c::/64"]))
         .send()
         .await
-        .unwrap();
+        .expect("updates");
 
     assert_eq!(
         last_query(&server).await,
@@ -190,7 +194,7 @@ async fn several_hostnames_share_one_parameter() {
         .hostname("b.example.dedyn.io")
         .send()
         .await
-        .unwrap();
+        .expect("updates");
 
     assert_eq!(
         last_query(&server).await,
@@ -207,7 +211,7 @@ async fn a_per_hostname_override_keeps_its_colon() {
         .address_for("a.example.dedyn.io", Family::V4, IpUpdate::set(["1.2.3.4"]))
         .send()
         .await
-        .unwrap();
+        .expect("updates");
 
     // The parameter *name* carries the hostname, so whatever encoding it travels under has
     // to decode back to a single colon-joined key.
@@ -228,13 +232,16 @@ async fn basic_auth_is_sent_as_the_protocol_recommends() {
         .basic_auth("user", "token")
         .rate_limits(RateLimits::unlimited())
         .build()
-        .unwrap();
+        .expect("valid client");
 
-    client.update(HOST).send().await.unwrap();
+    client.update(HOST).send().await.expect("updates");
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = server.received_requests().await.expect("recorded requests");
     assert_eq!(
-        requests[0].headers.get("authorization").unwrap(),
+        requests[0]
+            .headers
+            .get("authorization")
+            .expect("authorization header"),
         "Basic dXNlcjp0b2tlbg=="
     );
 }
@@ -247,13 +254,16 @@ async fn token_auth_uses_the_desec_scheme() {
         .token("abc")
         .rate_limits(RateLimits::unlimited())
         .build()
-        .unwrap();
+        .expect("valid client");
 
-    client.update(HOST).send().await.unwrap();
+    client.update(HOST).send().await.expect("updates");
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = server.received_requests().await.expect("recorded requests");
     assert_eq!(
-        requests[0].headers.get("authorization").unwrap(),
+        requests[0]
+            .headers
+            .get("authorization")
+            .expect("authorization header"),
         "Token abc"
     );
 }
@@ -266,9 +276,9 @@ async fn query_credentials_travel_in_the_query_string() {
         .query_credentials("user", "tok")
         .rate_limits(RateLimits::unlimited())
         .build()
-        .unwrap();
+        .expect("valid client");
 
-    client.update(HOST).send().await.unwrap();
+    client.update(HOST).send().await.expect("updates");
 
     let query = last_query(&server).await;
     assert!(query.contains(&pair("username", "user")), "{query:?}");
@@ -288,7 +298,7 @@ async fn update_failures_map_onto_the_classifiers() {
             .update(HOST)
             .send()
             .await
-            .unwrap_err();
+            .expect_err("badauth");
         let classified = match status {
             401 => err.is_unauthorized(),
             404 => err.is_not_found(),
@@ -303,16 +313,20 @@ async fn the_rate_limit_domain_stays_off_the_wire() {
     let server = good_server().await;
     let client = dyndns_client(&server);
 
-    client.update("a.example.dedyn.io").send().await.unwrap();
+    client
+        .update("a.example.dedyn.io")
+        .send()
+        .await
+        .expect("updates");
     client
         .update("a.example.dedyn.io")
         .rate_limit_domain(HOST)
         .send()
         .await
-        .unwrap();
+        .expect("updates");
 
     // It only picks the bucket the local limiter counts against.
-    let requests = server.received_requests().await.unwrap();
+    let requests = server.received_requests().await.expect("recorded requests");
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].url.path(), requests[1].url.path());
     assert_eq!(query_of(&requests[0]), query_of(&requests[1]));

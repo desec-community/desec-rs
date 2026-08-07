@@ -1,5 +1,5 @@
 //! Mocked coverage of the `/domains/{name}/rrsets/` endpoints, apex traps included.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
 
 mod common;
 

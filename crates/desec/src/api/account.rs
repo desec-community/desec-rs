@@ -376,6 +376,8 @@ impl<'a> AccountApi<'a> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     fn json<T: Serialize>(value: &T) -> String {

@@ -1,5 +1,5 @@
 //! Authentication, error mapping, retries and rate limiting on the wire.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
 
 mod common;
 
@@ -26,7 +26,7 @@ fn client_with_retries(server: &MockServer, retries: u32) -> Client {
         .rate_limits(RateLimits::unlimited())
         .max_retries(retries)
         .build()
-        .unwrap()
+        .expect("valid client")
 }
 
 fn ok_domain() -> ResponseTemplate {
@@ -41,7 +41,7 @@ fn header_value(request: &Request, name: &str) -> Option<String> {
 }
 
 async fn requests(server: &MockServer) -> Vec<Request> {
-    server.received_requests().await.unwrap()
+    server.received_requests().await.expect("recorded requests")
 }
 
 async fn request_count(server: &MockServer) -> usize {
@@ -55,7 +55,11 @@ async fn error_from(status: u16, body: &str, content_type: &str) -> Error {
         .respond_with(ResponseTemplate::new(status).set_body_raw(body.to_owned(), content_type))
         .mount(&server)
         .await;
-    client.domains().get("example.com").await.unwrap_err()
+    client
+        .domains()
+        .get("example.com")
+        .await
+        .expect_err("an error status")
 }
 
 #[tokio::test]
@@ -69,7 +73,7 @@ async fn requests_authenticate_with_the_token_scheme() {
         .mount(&server)
         .await;
 
-    client.domains().get("example.com").await.unwrap();
+    client.domains().get("example.com").await.expect("a domain");
 
     // deSEC rejects `Bearer`, so the scheme is pinned rather than merely present.
     let sent = header_value(&requests(&server).await[0], "authorization");
@@ -89,7 +93,7 @@ async fn a_client_without_a_token_sends_no_authorization_header() {
         .domains()
         .get("example.com")
         .await
-        .unwrap();
+        .expect("a domain");
 
     assert_eq!(
         header_value(&requests(&server).await[0], "authorization"),
@@ -109,21 +113,21 @@ async fn the_user_agent_names_the_crate_and_can_be_overridden() {
         .domains()
         .get("example.com")
         .await
-        .unwrap();
+        .expect("a domain");
     Client::builder()
         .base_url(format!("{}/api/v1", server.uri()))
         .user_agent("x/1")
         .rate_limits(RateLimits::unlimited())
         .max_retries(0)
         .build()
-        .unwrap()
+        .expect("valid client")
         .domains()
         .get("example.com")
         .await
-        .unwrap();
+        .expect("a domain");
 
     let sent = requests(&server).await;
-    let default = header_value(&sent[0], "user-agent").unwrap();
+    let default = header_value(&sent[0], "user-agent").expect("a user-agent");
     assert!(default.starts_with("desec-rs/"), "{default}");
     assert_eq!(header_value(&sent[1], "user-agent").as_deref(), Some("x/1"));
 }
@@ -138,7 +142,11 @@ async fn with_token_swaps_the_credential_and_keeps_the_base_url() {
 
     let original = client_for(&server);
     let derived = original.with_token("other-token");
-    derived.domains().get("example.com").await.unwrap();
+    derived
+        .domains()
+        .get("example.com")
+        .await
+        .expect("a domain");
 
     assert_eq!(
         header_value(&requests(&server).await[0], "authorization").as_deref(),
@@ -165,8 +173,8 @@ async fn a_json_body_is_typed_and_a_get_carries_none() {
         .domains()
         .create(&NewDomain::new("example.com"))
         .await
-        .unwrap();
-    client.domains().get("example.com").await.unwrap();
+        .expect("a created domain");
+    client.domains().get("example.com").await.expect("a domain");
 
     let sent = requests(&server).await;
     assert_eq!(
@@ -188,7 +196,11 @@ async fn a_field_error_keeps_the_servers_message() {
 
     assert!(err.is_validation(), "{err:?}");
     assert_eq!(
-        err.api_error().unwrap().field("ttl").unwrap().messages(),
+        err.api_error()
+            .expect("api error")
+            .field("ttl")
+            .expect("ttl field")
+            .messages(),
         ["Ensure this value is greater than or equal to 3600."]
     );
 }
@@ -203,7 +215,7 @@ async fn a_nested_error_keeps_its_path() {
     .await;
 
     assert_eq!(
-        err.api_error().unwrap().messages(),
+        err.api_error().expect("api error").messages(),
         [("captcha.solution".to_owned(), "Invalid.")]
     );
 }
@@ -218,7 +230,7 @@ async fn statuses_map_onto_the_classifiers() {
             _ => err.is_not_found(),
         };
         assert!(classified, "{status} was not classified: {err:?}");
-        assert_eq!(err.api_error().unwrap().detail(), Some("No."));
+        assert_eq!(err.api_error().expect("api error").detail(), Some("No."));
     }
 }
 
@@ -227,7 +239,7 @@ async fn a_non_json_error_body_is_kept_as_text() {
     let html = "<html><head><title>502 Bad Gateway</title></head></html>";
     let err = error_from(502, html, "text/html").await;
 
-    assert_eq!(err.api_error().unwrap().detail(), Some(html));
+    assert_eq!(err.api_error().expect("api error").detail(), Some(html));
 }
 
 #[tokio::test]
@@ -235,7 +247,7 @@ async fn an_empty_error_body_is_harmless() {
     let err = error_from(400, "", "text/plain").await;
 
     assert!(err.is_validation(), "{err:?}");
-    assert_eq!(err.api_error().unwrap().detail(), Some(""));
+    assert_eq!(err.api_error().expect("api error").detail(), Some(""));
 }
 
 #[tokio::test]
@@ -246,7 +258,11 @@ async fn an_unexpected_success_body_is_a_decode_error() {
         .mount(&server)
         .await;
 
-    let err = client.domains().get("example.com").await.unwrap_err();
+    let err = client
+        .domains()
+        .get("example.com")
+        .await
+        .expect_err("the body does not decode");
 
     assert!(matches!(err, Error::Decode { .. }), "{err:?}");
     assert!(err.to_string().contains("Domain"), "{err}");
@@ -281,7 +297,7 @@ async fn a_server_error_is_retried_until_it_succeeds() {
         .domains()
         .get("example.com")
         .await
-        .unwrap();
+        .expect("a domain");
 
     assert_eq!(domain.name, "example.com");
     assert_eq!(request_count(&server).await, 2);
@@ -295,7 +311,11 @@ async fn retries_disabled_means_one_attempt() {
         .mount(&server)
         .await;
 
-    let err = client.domains().get("example.com").await.unwrap_err();
+    let err = client
+        .domains()
+        .get("example.com")
+        .await
+        .expect_err("a server error");
 
     assert_eq!(err.status().map(|s| s.as_u16()), Some(500));
     assert_eq!(request_count(&server).await, 1);
@@ -313,7 +333,7 @@ async fn a_client_error_is_never_retried() {
         .domains()
         .get("example.com")
         .await
-        .unwrap_err();
+        .expect_err("a client error");
 
     // A 400 will answer the same way forever, so retrying only burns rate-limit budget.
     assert!(err.is_validation(), "{err:?}");
@@ -352,13 +372,13 @@ async fn a_retry_resends_the_same_body() {
     client_with_retries(&server, 2)
         .rrsets("example.com")
         .replace(
-            &"www".parse().unwrap(),
+            &"www".parse().expect("valid subname"),
             &desec::RecordType::A,
             3600,
             ["127.0.0.1"],
         )
         .await
-        .unwrap();
+        .expect("a replaced rrset");
 
     let sent = requests(&server).await;
     assert_eq!(sent.len(), 2);
@@ -385,7 +405,7 @@ async fn a_non_idempotent_request_is_not_replayed_after_a_server_error() {
         .await
         .expect_err("a 500 on a POST is not retried");
 
-    assert_eq!(err.status().unwrap().as_u16(), 500);
+    assert_eq!(err.status().expect("a status").as_u16(), 500);
     assert_eq!(request_count(&server).await, 1);
     server.verify().await;
 }
@@ -412,7 +432,7 @@ async fn a_throttled_post_is_still_retried() {
         .domains()
         .create(&NewDomain::new("example.com"))
         .await
-        .unwrap();
+        .expect("a created domain");
 
     assert_eq!(request_count(&server).await, 2);
     server.verify().await;
@@ -444,7 +464,7 @@ async fn an_unhonoured_retry_after_does_not_wedge_later_requests() {
         .max_retries(0)
         .max_rate_limit_wait(Duration::from_secs(60))
         .build()
-        .unwrap();
+        .expect("valid client");
 
     let err = client
         .domains()
@@ -483,7 +503,7 @@ async fn an_absurd_retry_after_does_not_panic() {
         .token(TOKEN)
         .max_retries(0)
         .build()
-        .unwrap();
+        .expect("valid client");
 
     let err = client
         .domains()
@@ -543,7 +563,7 @@ async fn a_throttled_request_waits_out_retry_after_and_succeeds() {
         .domains()
         .get("example.com")
         .await
-        .unwrap();
+        .expect("a domain");
 
     assert_eq!(request_count(&server).await, 2);
 }
@@ -560,7 +580,7 @@ async fn a_persistent_throttle_exhausts_the_retry_budget() {
         .domains()
         .get("example.com")
         .await
-        .unwrap_err();
+        .expect_err("throttled");
 
     assert!(err.is_rate_limited(), "{err:?}");
     match err {
@@ -591,9 +611,13 @@ async fn a_retry_after_beyond_the_ceiling_fails_instead_of_sleeping() {
         .max_retries(3)
         .max_retry_delay(Duration::from_secs(1))
         .build()
-        .unwrap();
+        .expect("valid client");
 
-    let err = client.domains().get("example.com").await.unwrap_err();
+    let err = client
+        .domains()
+        .get("example.com")
+        .await
+        .expect_err("a retry-after over the ceiling");
 
     assert!(
         matches!(err, Error::RateLimited { attempts: 1, .. }),
@@ -614,7 +638,7 @@ async fn a_throttle_without_retry_after_falls_back_to_backoff() {
         .domains()
         .get("example.com")
         .await
-        .unwrap_err();
+        .expect_err("throttled");
 
     assert!(
         matches!(
@@ -643,15 +667,19 @@ async fn the_local_limiter_refuses_before_the_request_goes_out() {
         .token(TOKEN)
         .rate_limits(RateLimits::unlimited().with_scope(
             Scope::DnsApiCheap,
-            [Rate::new(1, Duration::from_secs(3600)).unwrap()],
+            [Rate::new(1, Duration::from_secs(3600)).expect("valid rate")],
         ))
         .max_rate_limit_wait(Duration::from_secs(1))
         .max_retries(0)
         .build()
-        .unwrap();
+        .expect("valid client");
 
-    client.domains().get("example.com").await.unwrap();
-    let err = client.domains().get("example.com").await.unwrap_err();
+    client.domains().get("example.com").await.expect("a domain");
+    let err = client
+        .domains()
+        .get("example.com")
+        .await
+        .expect_err("the local limiter refuses");
 
     assert!(
         matches!(
@@ -686,18 +714,18 @@ async fn rrset_reads_and_writes_draw_on_separate_scopes() {
         .token(TOKEN)
         .rate_limits(RateLimits::unlimited().with_scope(
             Scope::DnsApiCheap,
-            [Rate::new(1, Duration::from_secs(3600)).unwrap()],
+            [Rate::new(1, Duration::from_secs(3600)).expect("valid rate")],
         ))
         .max_rate_limit_wait(Duration::from_secs(1))
         .max_retries(0)
         .build()
-        .unwrap();
+        .expect("valid client");
 
     client
         .rrsets("example.com")
         .get(&Subname::apex(), &RecordType::A)
         .await
-        .unwrap();
+        .expect("an rrset");
     client
         .rrsets("example.com")
         .patch(
@@ -706,12 +734,12 @@ async fn rrset_reads_and_writes_draw_on_separate_scopes() {
             &RrsetPatch::new().ttl(3600),
         )
         .await
-        .unwrap();
+        .expect("a patched rrset");
     let err = client
         .rrsets("example.com")
         .get(&Subname::apex(), &RecordType::A)
         .await
-        .unwrap_err();
+        .expect_err("the read budget is spent");
 
     // The write drew on the per-domain scope, so it must not have spent the read budget.
     assert!(

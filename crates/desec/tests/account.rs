@@ -1,5 +1,5 @@
 //! Mocked tests for the account lifecycle: `/auth/`, `/captcha/` and the `/v/…/{code}/` steps.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
 
 mod common;
 
@@ -26,7 +26,7 @@ async fn anonymous_mock() -> (MockServer, Client) {
 
 /// wiremock has no "header is absent" matcher, so this reads the recorded requests instead.
 async fn assert_no_credentials_were_sent(server: &MockServer) {
-    let requests = server.received_requests().await.unwrap();
+    let requests = server.received_requests().await.expect("recorded requests");
     assert!(!requests.is_empty(), "no request reached the mock server");
     for request in &requests {
         assert!(
@@ -83,7 +83,7 @@ async fn a_captcha_parses_from_the_201_the_api_actually_returns() {
         .mount(&server)
         .await;
 
-    let captcha = client.account().captcha().await.unwrap();
+    let captcha = client.account().captcha().await.expect("captcha");
 
     assert_eq!(captcha.id, CAPTCHA_ID);
     assert_eq!(captcha.kind.as_deref(), Some("image"));
@@ -100,7 +100,7 @@ async fn a_captcha_parses_from_a_200_as_well() {
         .mount(&server)
         .await;
 
-    let captcha = client.account().captcha().await.unwrap();
+    let captcha = client.account().captcha().await.expect("captcha");
 
     assert_eq!(captcha.kind.as_deref(), Some("audio"));
 }
@@ -115,7 +115,7 @@ async fn a_captcha_without_a_kind_still_parses() {
         .mount(&server)
         .await;
 
-    let captcha = client.account().captcha().await.unwrap();
+    let captcha = client.account().captcha().await.expect("captcha");
 
     assert_eq!(captcha.kind, None);
     assert!(!captcha.challenge.is_empty());
@@ -138,7 +138,7 @@ async fn registering_posts_only_the_email_and_gets_a_detail_back() {
         .account()
         .register(&Registration::new("you@example.com"))
         .await
-        .unwrap();
+        .expect("registers");
 
     assert_eq!(detail.detail, "Welcome! Please check your mailbox.");
     assert_no_credentials_were_sent(&server).await;
@@ -173,7 +173,7 @@ async fn registering_can_carry_a_password_captcha_domain_and_outreach_preference
                 .outreach_preference(false),
         )
         .await
-        .unwrap();
+        .expect("registers");
 }
 
 #[tokio::test]
@@ -196,7 +196,7 @@ async fn activating_with_a_captcha_posts_it_nested_under_captcha() {
         .account()
         .activate(CODE, Some(&solution))
         .await
-        .unwrap();
+        .expect("activates");
 
     assert!(detail.detail.starts_with("Success!"));
     assert_no_credentials_were_sent(&server).await;
@@ -215,7 +215,11 @@ async fn activating_without_a_captcha_posts_an_empty_object() {
         .mount(&server)
         .await;
 
-    client.account().activate(CODE, None).await.unwrap();
+    client
+        .account()
+        .activate(CODE, None)
+        .await
+        .expect("activates");
 }
 
 #[tokio::test]
@@ -236,7 +240,7 @@ async fn logging_in_returns_a_login_token_with_its_secret_and_lifetimes() {
         .account()
         .log_in("you@example.com", &Secret::new(PASSWORD))
         .await
-        .unwrap();
+        .expect("logs in");
 
     // A null `mfa` would mean an API token; a login token reports the flag.
     assert_eq!(token.mfa, Some(false));
@@ -262,7 +266,7 @@ async fn logging_in_with_wrong_credentials_surfaces_as_forbidden() {
         .account()
         .log_in("you@example.com", &Secret::new("wrong"))
         .await
-        .unwrap_err();
+        .expect_err("the credentials are wrong");
 
     assert!(err.is_forbidden(), "{err:?}");
 }
@@ -278,7 +282,7 @@ async fn logging_out_sends_the_token_it_is_revoking() {
         .mount(&server)
         .await;
 
-    client.account().log_out().await.unwrap();
+    client.account().log_out().await.expect("logs out");
 }
 
 #[tokio::test]
@@ -292,7 +296,7 @@ async fn reading_an_account_parses_both_limits() {
         .mount(&server)
         .await;
 
-    let account = client.account().get().await.unwrap();
+    let account = client.account().get().await.expect("account");
 
     assert_eq!(account.email, "you@example.com");
     assert_eq!(account.limit_domains, Some(15));
@@ -311,7 +315,7 @@ async fn an_account_without_domains_under_management_leaves_it_none() {
         .mount(&server)
         .await;
 
-    let account = client.account().get().await.unwrap();
+    let account = client.account().get().await.expect("account");
 
     assert_eq!(account.domains_under_management, None);
 }
@@ -332,7 +336,7 @@ async fn changing_the_outreach_preference_patches_only_that_field() {
         .account()
         .update(&AccountUpdate::new().outreach_preference(false))
         .await
-        .unwrap();
+        .expect("updates");
 }
 
 #[tokio::test]
@@ -351,7 +355,7 @@ async fn replacing_account_settings_uses_put() {
         .account()
         .replace(&AccountUpdate::new().outreach_preference(true))
         .await
-        .unwrap();
+        .expect("replaces");
 }
 
 #[tokio::test]
@@ -375,7 +379,7 @@ async fn requesting_a_password_reset_with_a_captcha_is_accepted() {
         .account()
         .request_password_reset("you@example.com", Some(&solution))
         .await
-        .unwrap();
+        .expect("requests reset");
 
     assert!(detail.detail.starts_with("Please check"));
     assert_no_credentials_were_sent(&server).await;
@@ -398,7 +402,7 @@ async fn requesting_a_password_reset_without_a_captcha_omits_the_key() {
         .account()
         .request_password_reset("you@example.com", None)
         .await
-        .unwrap();
+        .expect("requests reset");
 }
 
 #[tokio::test]
@@ -420,7 +424,7 @@ async fn confirming_a_password_reset_posts_under_the_v_prefix() {
         .account()
         .confirm_password_reset(CODE, &Secret::new(PASSWORD))
         .await
-        .unwrap();
+        .expect("confirms reset");
 
     assert!(detail.detail.starts_with("Success!"));
     assert_no_credentials_were_sent(&server).await;
@@ -449,7 +453,7 @@ async fn requesting_an_email_change_yields_a_detail_not_an_account() {
         .account()
         .request_email_change("you@example.com", &Secret::new(PASSWORD), "new@example.com")
         .await
-        .unwrap();
+        .expect("requests email change");
 
     assert!(detail.detail.contains("confirm email address change"));
 }
@@ -467,7 +471,11 @@ async fn confirming_an_email_change_posts_an_empty_object() {
         .mount(&server)
         .await;
 
-    client.account().confirm_email_change(CODE).await.unwrap();
+    client
+        .account()
+        .confirm_email_change(CODE)
+        .await
+        .expect("confirms email change");
     assert_no_credentials_were_sent(&server).await;
 }
 
@@ -492,7 +500,7 @@ async fn requesting_deletion_yields_a_detail() {
         .account()
         .request_deletion("you@example.com", &Secret::new(PASSWORD))
         .await
-        .unwrap();
+        .expect("requests deletion");
 
     assert!(detail.detail.contains("account deletion"));
 }
@@ -514,9 +522,9 @@ async fn requesting_deletion_with_domains_left_surfaces_as_a_conflict() {
         .account()
         .request_deletion("you@example.com", &Secret::new(PASSWORD))
         .await
-        .unwrap_err();
+        .expect_err("domains are left");
 
-    assert_eq!(err.status().unwrap().as_u16(), 409);
+    assert_eq!(err.status().expect("status").as_u16(), 409);
     assert!(!err.is_validation(), "{err:?}");
 }
 
@@ -533,7 +541,11 @@ async fn confirming_deletion_posts_an_empty_object() {
         .mount(&server)
         .await;
 
-    client.account().confirm_deletion(CODE).await.unwrap();
+    client
+        .account()
+        .confirm_deletion(CODE)
+        .await
+        .expect("confirms deletion");
     assert_no_credentials_were_sent(&server).await;
 }
 
@@ -550,5 +562,9 @@ async fn a_confirmation_code_with_unsafe_characters_is_percent_encoded() {
         .mount(&server)
         .await;
 
-    client.account().activate("a b/c%d?e", None).await.unwrap();
+    client
+        .account()
+        .activate("a b/c%d?e", None)
+        .await
+        .expect("activates");
 }

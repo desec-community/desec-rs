@@ -250,6 +250,7 @@ impl Client {
         let mut url = self.inner.base.clone();
         {
             // The builder rejects any base URL that cannot be a base, so this holds.
+            #[expect(clippy::expect_used)]
             let mut path = url
                 .path_segments_mut()
                 .expect("base URL was validated as a base");
@@ -684,6 +685,8 @@ impl ClientBuilder {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     fn client() -> Client {

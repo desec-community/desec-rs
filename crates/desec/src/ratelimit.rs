@@ -211,6 +211,7 @@ impl RateLimits {
         // Parsing string literals keeps these readable against the documentation table;
         // the expects cannot fire because every literal is well-formed, and the unit
         // test below pins that.
+        #[expect(clippy::expect_used)]
         fn rates(specs: &[&str]) -> Vec<Rate> {
             specs
                 .iter()
@@ -542,6 +543,8 @@ impl Limiter {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     fn rate(s: &str) -> Rate {
@@ -550,23 +553,26 @@ mod tests {
 
     #[test]
     fn parses_desec_rate_notation() {
-        assert_eq!(rate("10/s"), Rate::new(10, Duration::from_secs(1)).unwrap());
+        assert_eq!(
+            rate("10/s"),
+            Rate::new(10, Duration::from_secs(1)).expect("valid rate")
+        );
         assert_eq!(
             rate("50/min"),
-            Rate::new(50, Duration::from_secs(60)).unwrap()
+            Rate::new(50, Duration::from_secs(60)).expect("valid rate")
         );
         assert_eq!(
             rate("600/h"),
-            Rate::new(600, Duration::from_secs(3600)).unwrap()
+            Rate::new(600, Duration::from_secs(3600)).expect("valid rate")
         );
         assert_eq!(
             rate("2000/day"),
-            Rate::new(2000, Duration::from_secs(86_400)).unwrap()
+            Rate::new(2000, Duration::from_secs(86_400)).expect("valid rate")
         );
         // The dyndns scope carries a period multiplier, which plain DRF rates lack.
         assert_eq!(
             rate("2/2min"),
-            Rate::new(2, Duration::from_secs(120)).unwrap()
+            Rate::new(2, Duration::from_secs(120)).expect("valid rate")
         );
     }
 
