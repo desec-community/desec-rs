@@ -14,6 +14,11 @@
 //! nor that it is delegated, so a name that exists only inside deSEC exercises every code
 //! path a real one would.
 //!
+//! Two things here work around a server-side race rather than the client: deSEC strands a
+//! domain for good if two domain writes collide, and both measures exist to stay clear of
+//! it. Domain creation and deletion are serialized by [`domain_write_lock`], and scratch
+//! domains default to a parent deSEC does not register locally. See [`parent_zone`].
+//!
 //! Interrupted runs leak a domain. The first scratch creation in a process sweeps anything
 //! left over from a previous one, so leakage is self-correcting rather than cumulative.
 //!
@@ -28,13 +33,13 @@
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use desec::api::domains::NewDomain;
+use desec::api::domains::{Domain, NewDomain};
 use desec::api::rrsets::{BulkPatch, BulkPut, NewRrset, RrsetPatch};
 use desec::api::tokens::{NewTokenPolicy, TokenPolicyPatch, TokenUpdate};
 use desec::dyndns::{DynDnsClient, IpUpdate};
-use desec::{Client, DjangoDuration, RecordType, Subname};
+use desec::{Client, DjangoDuration, RecordType, Result, Subname};
 use tokio::runtime::Runtime;
-use tokio::sync::OnceCell;
+use tokio::sync::{Mutex, OnceCell};
 
 /// Prefix every scratch domain shares, so the sweep can recognise its own leftovers.
 const SCRATCH_PREFIX: &str = "desec-rs-test";
@@ -68,10 +73,49 @@ fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
-/// Parent zone for scratch domains, overridable for accounts that would rather not create
-/// names under `dedyn.io`.
+/// Parent zone for scratch domains, overridable with `DESEC_TEST_PARENT`.
+///
+/// Deliberately not `dedyn.io`. Creating or deleting a child of a local public suffix also
+/// rewrites that suffix's delegation, and two of those colliding is what strands a domain.
+/// A parent deSEC does not register locally skips the delegation step entirely.
+///
+/// Reserved names are no good here: deSEC rejects a child of `example.com` as disallowed by
+/// policy. The default is a name the project's test account controls, so point this at one
+/// of your own to run the suite against a different account.
 fn parent_zone() -> String {
-    env("DESEC_TEST_PARENT").unwrap_or_else(|| "dedyn.io".to_owned())
+    env("DESEC_TEST_PARENT").unwrap_or_else(|| "desec-rs-test.shine.town".to_owned())
+}
+
+/// Parent zone for the one test that cannot use [`parent_zone`], overridable with
+/// `DESEC_TEST_DYNDNS_PARENT`. The dynDNS endpoint only answers for names deSEC registers
+/// itself, so that test stays on `dedyn.io` and accepts the race risk that comes with it.
+fn dyndns_parent_zone() -> String {
+    env("DESEC_TEST_DYNDNS_PARENT").unwrap_or_else(|| "dedyn.io".to_owned())
+}
+
+/// Serializes domain creation and deletion across the whole suite.
+///
+/// deSEC's change tracker is not safe against two domain writes overlapping: one can lose
+/// its zone in pdns while its database row is rolled back, leaving a domain that answers
+/// `500` to every later read and delete and holds a slot against `limit_domains` for good.
+/// Only domain writes take this lock, so rrset and token work still runs concurrently.
+fn domain_write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Creates a domain under [`domain_write_lock`]. Every creation in this file goes through
+/// here, so there is one place to lift the serialization when deSEC is safe against it.
+async fn create_domain(new: &NewDomain) -> Result<Domain> {
+    let _guard = domain_write_lock().lock().await;
+    client().await.domains().create(new).await
+}
+
+/// Deletes a domain under [`domain_write_lock`]. As [`create_domain`], every deletion in
+/// this file goes through here.
+async fn delete_domain(name: &str) -> Result<()> {
+    let _guard = domain_write_lock().lock().await;
+    client().await.domains().delete(name).await
 }
 
 /// One client for the whole binary, so every test shares one rate limiter and the suite
@@ -115,22 +159,26 @@ struct Scratch {
     minimum_ttl: u32,
 }
 
+/// A scratch name, unique per test and per run without pulling in a random number
+/// generator: the label separates concurrent tests, the timestamp separates successive runs.
+fn scratch_name(label: &str, parent: &str) -> String {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock is after the epoch")
+        .as_nanos();
+    format!("{SCRATCH_PREFIX}-{label}-{stamp:x}.{parent}")
+}
+
 impl Scratch {
     async fn create(label: &str) -> Self {
+        Self::create_under(label, &parent_zone()).await
+    }
+
+    async fn create_under(label: &str, parent: &str) -> Self {
         sweep_leftovers().await;
 
-        // Unique per test and per run without pulling in a random number generator: the
-        // label separates concurrent tests, the timestamp separates successive runs.
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock is after the epoch")
-            .as_nanos();
-        let name = format!("{SCRATCH_PREFIX}-{label}-{stamp:x}.{}", parent_zone());
-
-        let domain = client()
-            .await
-            .domains()
-            .create(&NewDomain::new(&name))
+        let name = scratch_name(label, parent);
+        let domain = create_domain(&NewDomain::new(&name))
             .await
             .unwrap_or_else(|err| panic!("could not create scratch domain {name}: {err}"));
 
@@ -142,10 +190,7 @@ impl Scratch {
     }
 
     async fn destroy(self) {
-        client()
-            .await
-            .domains()
-            .delete(&self.name)
+        delete_domain(&self.name)
             .await
             .unwrap_or_else(|err| panic!("could not delete scratch domain {}: {err}", self.name));
     }
@@ -174,7 +219,7 @@ async fn sweep_leftovers() {
 
             for name in stale {
                 eprintln!("sweeping leftover scratch domain {name}");
-                if let Err(err) = client.domains().delete(&name).await {
+                if let Err(err) = delete_domain(&name).await {
                     eprintln!("  could not delete {name}: {err}");
                 }
             }
@@ -261,7 +306,7 @@ fn a_deleted_domain_is_gone() {
             "domain still readable after deletion"
         );
         // Deletion is documented as idempotent, so a second attempt must still succeed.
-        client.domains().delete(&name).await.expect("second delete");
+        delete_domain(&name).await.expect("second delete");
     });
 }
 
@@ -271,16 +316,10 @@ fn a_zonefile_can_be_imported_on_creation() {
     live(async {
         let client = client().await;
         sweep_leftovers().await;
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let name = format!("{SCRATCH_PREFIX}-import-{stamp:x}.{}", parent_zone());
+        let name = scratch_name("import", &parent_zone());
 
         let zonefile = format!("www.{name}. 3600 IN A 127.0.0.1\n");
-        let domain = client
-            .domains()
-            .create(&NewDomain::new(&name).zonefile(zonefile))
+        let domain = create_domain(&NewDomain::new(&name).zonefile(zonefile))
             .await
             .expect("create with zonefile");
 
@@ -291,7 +330,7 @@ fn a_zonefile_can_be_imported_on_creation() {
             .expect("imported record");
         assert_eq!(imported.records, ["127.0.0.1"]);
 
-        client.domains().delete(&name).await.expect("cleanup");
+        delete_domain(&name).await.expect("cleanup");
     });
 }
 
@@ -527,11 +566,7 @@ fn validation_errors_keep_their_field_names() {
 #[ignore = "talks to the real API; run with `just live-test`"]
 fn an_unknown_domain_is_not_found() {
     live(async {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let absent = format!("{SCRATCH_PREFIX}-absent-{stamp:x}.{}", parent_zone());
+        let absent = scratch_name("absent", &parent_zone());
 
         let err = client()
             .await
@@ -671,14 +706,14 @@ fn token_policies_can_revoke_write_permission() {
     });
 }
 
-/// Needs the scratch domain to be one the dynDNS endpoint will accept, which is why the
-/// parent defaults to `dedyn.io`.
+/// The only test that has to create a `dedyn.io` child, because the dynDNS endpoint only
+/// answers for names deSEC registers itself. See [`dyndns_parent_zone`].
 #[test]
 #[ignore = "talks to the real API; run with `just live-test`"]
 fn a_dyndns_update_sets_the_address_records() {
     live(async {
         let token = env("DESEC_TOKEN").expect("DESEC_TOKEN is set");
-        let scratch = Scratch::create("dyndns").await;
+        let scratch = Scratch::create_under("dyndns", &dyndns_parent_zone()).await;
 
         let dyndns = DynDnsClient::builder()
             .token(token)
