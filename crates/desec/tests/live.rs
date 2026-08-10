@@ -20,7 +20,9 @@
 //! domains default to a parent deSEC does not register locally. See [`parent_zone`].
 //!
 //! Interrupted runs leak a domain. The first scratch creation in a process sweeps anything
-//! left over from a previous one, so leakage is self-correcting rather than cumulative.
+//! left over from a previous one, so leakage is self-correcting rather than cumulative. The
+//! sweep only touches names it can prove it minted, and only after an hour, so a run
+//! happening elsewhere at the same time keeps its zones. See [`scratch_age`].
 //!
 //! The client here runs with deSEC's real rate limits enabled, which paces the suite and
 //! doubles as a check that the limiter's numbers match what the server enforces. Set
@@ -169,6 +171,67 @@ fn scratch_name(label: &str, parent: &str) -> String {
     format!("{SCRATCH_PREFIX}-{label}-{stamp:x}.{parent}")
 }
 
+/// How old a scratch domain must be before the sweep will delete it.
+///
+/// Long enough that no run still using a domain can have it taken away, short enough that a
+/// leak is cleared by the next session rather than lingering.
+const SWEEP_GRACE: Duration = Duration::from_secs(3600);
+
+/// How long ago [`scratch_name`] minted this name, or `None` if it did not mint it.
+///
+/// Deliberately stricter than a prefix test, for two reasons. The default parent zone is
+/// itself `desec-rs-test.shine.town`, so `starts_with(SCRATCH_PREFIX)` matches the parent —
+/// and sweeping the parent would take every scratch domain with it. And a bare prefix test
+/// cannot tell a leftover from a domain another run is using right now, which is what the
+/// age is for: two concurrent runs, or a developer and CI, would otherwise delete each
+/// other's zones mid-test.
+fn scratch_age(name: &str, now: Duration) -> Option<Duration> {
+    // Only the leftmost label carries the stamp; the rest is the parent zone.
+    let (first, _parent) = name.split_once('.')?;
+    // The trailing hyphen is what keeps the parent zone itself from matching.
+    let (_label, stamp) = first
+        .strip_prefix(SCRATCH_PREFIX)?
+        .strip_prefix('-')?
+        .rsplit_once('-')?;
+    let minted = Duration::from_nanos(u64::try_from(u128::from_str_radix(stamp, 16).ok()?).ok()?);
+    Some(now.saturating_sub(minted))
+}
+
+/// Not `#[ignore]`d: the sweep decides what to delete, so its rule is worth checking
+/// without a network and without an account.
+#[test]
+fn the_sweep_recognises_only_its_own_leftovers() {
+    let now = Duration::from_secs(10_000);
+    let age = |name: &str| scratch_age(name, now);
+
+    // A name this module minted, with the label the round trip has to survive.
+    let minted = scratch_name("probes", "example.test");
+    assert!(age(&minted).is_some(), "{minted}");
+
+    // The default parent zone starts with the prefix but was not minted here. Sweeping it
+    // would take every scratch domain under it along too.
+    assert_eq!(age("desec-rs-test.shine.town"), None);
+    assert_eq!(age("desec-rs-test"), None);
+
+    // Nothing else in the account is ours to delete.
+    assert_eq!(age("example.com"), None);
+    assert_eq!(age("desec-rs-testing.example.com"), None);
+    assert_eq!(age("edns-webhook-test-probes-1.example.com"), None);
+    // Minted shape, but the stamp is not hex.
+    assert_eq!(age("desec-rs-test-probes-zzz.example.com"), None);
+
+    // The age itself, from a stamp of one nanosecond past the epoch.
+    assert_eq!(
+        age("desec-rs-test-probes-1.example.com"),
+        Some(now - Duration::from_nanos(1))
+    );
+    // A clock that moved backwards saturates rather than panicking, and reads as fresh.
+    assert_eq!(
+        scratch_age("desec-rs-test-probes-1.example.com", Duration::ZERO),
+        Some(Duration::ZERO)
+    );
+}
+
 impl Scratch {
     async fn create(label: &str) -> Self {
         Self::create_under(label, &parent_zone()).await
@@ -198,6 +261,9 @@ impl Scratch {
 
 /// Deletes scratch domains left behind by an interrupted run. Runs once per process.
 ///
+/// Only names [`scratch_name`] could have minted, and only ones older than [`SWEEP_GRACE`],
+/// so a run in progress elsewhere keeps its zones. See [`scratch_age`].
+///
 /// A domain whose deletion once failed mid-way stays listed but answers `500` to every
 /// later `GET` and `DELETE`, so it can never be swept and holds a slot against
 /// `limit_domains` until deSEC clears it by hand. Report rather than fail.
@@ -205,6 +271,9 @@ async fn sweep_leftovers() {
     static SWEPT: OnceCell<()> = OnceCell::const_new();
     SWEPT
         .get_or_init(|| async {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock is after the epoch");
             let client = client().await;
             let stale: Vec<_> = client
                 .domains()
@@ -213,7 +282,9 @@ async fn sweep_leftovers() {
                 .await
                 .expect("could not list domains")
                 .into_iter()
-                .filter(|domain| domain.name.starts_with(SCRATCH_PREFIX))
+                .filter(|domain| {
+                    scratch_age(&domain.name, now).is_some_and(|age| age > SWEEP_GRACE)
+                })
                 .map(|domain| domain.name)
                 .collect();
 
