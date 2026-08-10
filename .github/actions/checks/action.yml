@@ -5,8 +5,13 @@
 #
 # Deliberately not a single `just ci` call. The recipe is the local entry point, but here
 # one step per check is what makes a red run legible at a glance.
+#
+# Clippy, the tests, the docs and the build itself are flake checks rather than steps here.
+# That is what lets them share one compiled dependency tree: the store cache restores it,
+# and each derivation then only compiles this crate. Run through `nix develop` they each
+# built into a target/ that no cache carried between runs.
 name: Run checks
-description: Run formatting, lint, test, doc and packaging checks in the Nix dev shell.
+description: Run formatting, packaging and the flake checks in the Nix dev shell.
 
 runs:
   using: composite
@@ -14,22 +19,6 @@ runs:
     - name: Check formatting
       shell: bash
       run: nix develop -c just fmt-check
-
-    - name: Clippy
-      shell: bash
-      run: nix develop -c just lint
-
-    - name: Test
-      shell: bash
-      run: nix develop -c just test
-
-    - name: Build
-      shell: bash
-      run: nix develop -c just build
-
-    - name: Documentation
-      shell: bash
-      run: nix develop -c just doc
 
     - name: Check README.md is up to date
       shell: bash
@@ -44,3 +33,8 @@ runs:
     - name: Package check
       shell: bash
       run: nix develop -c cargo package --locked --workspace
+
+    # Clippy, the tests, the docs and the library build itself.
+    - name: Nix flake check
+      shell: bash
+      run: nix flake check --print-build-logs
