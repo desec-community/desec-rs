@@ -93,6 +93,36 @@
 //! find its zone with [`owner_of`](api::DomainsApi::owner_of) and address one RRset
 //! directly, never list a zone.
 //!
+//! ```no_run
+//! use desec::{RecordType, Subname};
+//!
+//! # async fn run(client: desec::Client, token: &str) -> Result<(), desec::Error> {
+//! let qname = "_acme-challenge.foo.example.com";
+//!
+//! // Ask the server where the zone cut is rather than guessing at the registrable name.
+//! let Some(zone) = client.domains().owner_of(qname).await? else {
+//!     return Ok(());
+//! };
+//!
+//! // What is left of the zone name is the subname, and nothing is left at the apex.
+//! let subname: Subname = qname
+//!     .strip_suffix(&zone.name)
+//!     .and_then(|rest| rest.strip_suffix('.'))
+//!     .unwrap_or("")
+//!     .parse()?;
+//!
+//! // `PUT` is idempotent, so a retried challenge needs no read to decide what to send,
+//! // and the TTL floor came along with the domain.
+//! client
+//!     .rrsets(&zone.name)
+//!     .replace(&subname, &RecordType::TXT, zone.minimum_ttl, [format!("\"{token}\"")])
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! This would cost two requests regardless of the size of the zone.
+//!
 //! # Errors
 //!
 //! [`Error`] is a `thiserror` enum. A rejected request keeps the server's error document
