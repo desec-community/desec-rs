@@ -39,6 +39,8 @@ use desec::api::domains::{Domain, NewDomain};
 use desec::api::rrsets::{BulkPatch, BulkPut, NewRrset, RrsetPatch};
 use desec::api::tokens::{NewTokenPolicy, TokenPolicyPatch, TokenUpdate};
 use desec::dyndns::{DynDnsClient, IpUpdate};
+#[cfg(feature = "probes")]
+use desec::probes::{Expect, PROBES, Probe};
 use desec::{Client, DjangoDuration, RecordType, Result, Subname};
 use tokio::runtime::Runtime;
 use tokio::sync::{Mutex, OnceCell};
@@ -590,6 +592,195 @@ fn bulk_rrset_operations() {
         }
 
         scratch.destroy().await;
+    });
+}
+
+/// Renders a stored value for the report and for comparison against [`Expect::Canonical`].
+///
+/// A single-valued RRset renders bare; anything else shows its structure, because whether a
+/// split `TXT` comes back as one presentation string holding several character-strings or
+/// as several records is one of the things being measured.
+#[cfg(feature = "probes")]
+fn render(records: &[String]) -> String {
+    match records {
+        [one] => one.clone(),
+        many => format!("{many:?}"),
+    }
+}
+
+/// Submits every probe, returning the ones deSEC accepted and the ones it refused.
+///
+/// A bulk write is atomic, so a single refused value would otherwise cost the run all of its
+/// data. deSEC reports bulk failures positionally — one entry per submitted item, empty
+/// where the item validated — so a refusal names itself: record it, drop it, resend the
+/// rest. Bounded at three rounds because a whole-zone rejection carries no index and would
+/// otherwise loop; past that, each remaining probe goes on its own so every one of them
+/// still yields an answer.
+///
+/// A refusal is data here, not a failure. Which values deSEC will not take is exactly as
+/// interesting as what it does to the ones it will.
+#[cfg(feature = "probes")]
+async fn submit_probes(
+    rrsets: &desec::api::rrsets::RrsetsApi<'_>,
+    ttl: u32,
+) -> (Vec<&'static Probe>, Vec<(&'static Probe, String)>) {
+    fn as_rrset(probe: &Probe, ttl: u32) -> NewRrset {
+        NewRrset::new(
+            probe.subname.parse().expect("probe subname is valid"),
+            probe
+                .record_type
+                .parse()
+                .expect("probe record type is valid"),
+            ttl,
+            [probe.wire],
+        )
+    }
+
+    let mut pending: Vec<&'static Probe> = PROBES.iter().collect();
+    let mut rejected: Vec<(&'static Probe, String)> = Vec::new();
+
+    for round in 1..=3 {
+        let batch: Vec<NewRrset> = pending.iter().map(|p| as_rrset(p, ttl)).collect();
+        let Err(err) = rrsets.create_bulk(&batch).await else {
+            return (pending, rejected);
+        };
+
+        // Positional only when there is one entry per item; anything else is a verdict on
+        // the batch as a whole and cannot be attributed.
+        let items = err.api_error().and_then(desec::ApiError::bulk_items);
+        let Some(items) = items.filter(|items| items.len() == pending.len()) else {
+            eprintln!("round {round}: bulk rejection is not positional ({err}); one at a time");
+            break;
+        };
+
+        let mut survivors = Vec::new();
+        for (probe, item) in pending.iter().zip(items) {
+            let messages = item.messages();
+            if messages.is_empty() {
+                survivors.push(*probe);
+            } else {
+                rejected.push((*probe, messages.join("; ")));
+            }
+        }
+
+        if survivors.len() == pending.len() {
+            eprintln!("round {round}: rejected, but no item was blamed ({err}); one at a time");
+            break;
+        }
+        pending = survivors;
+    }
+
+    // Fallback: whatever is left goes on its own, so one unattributable rejection cannot
+    // hide the rest. Reached only when the batch was refused as a whole.
+    let mut accepted = Vec::new();
+    for probe in pending {
+        match rrsets.create_bulk(&[as_rrset(probe, ttl)]).await {
+            Ok(_) => accepted.push(probe),
+            Err(err) => rejected.push((probe, err.to_string())),
+        }
+    }
+    (accepted, rejected)
+}
+
+/// What deSEC rewrites on storage, per record type.
+///
+/// Characterization, not verification: every probe in [`PROBES`] starts as
+/// [`Expect::Unknown`], and for those this reports what came back and passes. Read the
+/// table under `--nocapture`, promote each row to [`Expect::Verbatim`] or
+/// [`Expect::Canonical`] in `src/probes.rs`, and commit — the commit message is the
+/// deliverable. From then on the row is a real assertion.
+///
+/// One scratch zone, one bulk write, one list.
+#[cfg(feature = "probes")]
+#[test]
+#[ignore = "talks to the real API; run with `just live-test`"]
+fn record_values_come_back_in_the_form_desec_chose() {
+    live(async {
+        let client = client().await;
+        let scratch = Scratch::create("probes").await;
+
+        let (accepted, refused) = {
+            let rrsets = client.rrsets(&scratch.name);
+            let (accepted, refused) = submit_probes(&rrsets, scratch.minimum_ttl).await;
+            let stored = rrsets.list().all().await.expect("could not list rrsets");
+
+            let mut observed = Vec::new();
+            for probe in accepted {
+                let subname: Subname = probe.subname.parse().expect("probe subname is valid");
+                let record_type: RecordType =
+                    probe.record_type.parse().expect("probe type is valid");
+                let found = stored
+                    .iter()
+                    .find(|rr| rr.subname == subname && rr.record_type == record_type)
+                    .map(|rr| render(&rr.records));
+                observed.push((probe, found));
+            }
+            (observed, refused)
+        };
+
+        // Before any assertion, so a newly promoted expectation that turns out wrong does
+        // not also leak a zone.
+        scratch.destroy().await;
+
+        let mut unknown = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+
+        for (probe, stored) in &accepted {
+            let Some(stored) = stored else {
+                failures.push(format!("{}: accepted, but absent from the zone", probe.id));
+                continue;
+            };
+            match &probe.expect {
+                Expect::Unknown => unknown.push((probe, stored.clone())),
+                Expect::Verbatim if stored == probe.wire => {}
+                Expect::Verbatim => failures.push(format!(
+                    "{}: expected the value back unchanged\n  sent   {}\n  stored {stored}",
+                    probe.id, probe.wire
+                )),
+                Expect::Canonical(want) if stored == want => {}
+                Expect::Canonical(want) => failures.push(format!(
+                    "{}: deSEC no longer canonicalizes this the same way\n  \
+                     sent     {}\n  expected {want}\n  stored   {stored}",
+                    probe.id, probe.wire
+                )),
+                Expect::Rejected(want) => failures.push(format!(
+                    "{}: expected a refusal ({want}), but it stored {stored}",
+                    probe.id
+                )),
+            }
+        }
+
+        for (probe, message) in &refused {
+            match &probe.expect {
+                Expect::Unknown => unknown.push((probe, format!("REFUSED: {message}"))),
+                Expect::Rejected(want) if message.contains(want) => {}
+                Expect::Rejected(want) => failures.push(format!(
+                    "{}: refused for a different reason\n  expected {want}\n  got      {message}",
+                    probe.id
+                )),
+                _ => failures.push(format!("{}: unexpectedly refused: {message}", probe.id)),
+            }
+        }
+
+        if !unknown.is_empty() {
+            println!(
+                "\n{} probe(s) have no recorded expectation yet.",
+                unknown.len()
+            );
+            println!("Promote each in crates/desec/src/probes.rs, then commit.\n");
+            println!("| id | sent | stored |");
+            println!("| --- | --- | --- |");
+            for (probe, stored) in &unknown {
+                println!("| `{}` | `{}` | `{stored}` |", probe.id, probe.wire);
+            }
+            println!();
+        }
+
+        assert!(
+            failures.is_empty(),
+            "deSEC's canonicalization no longer matches what src/probes.rs records:\n\n{}\n",
+            failures.join("\n\n")
+        );
     });
 }
 

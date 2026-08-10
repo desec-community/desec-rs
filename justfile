@@ -25,7 +25,7 @@ test:
 # These are #[ignore]d so `just test` and CI skip them; --ignored is what opts in. The
 # thread cap bounds how many scratch domains exist at once, against limit_domains.
 live-test *args='':
-    cargo test --test live -- --ignored --nocapture --test-threads 4 {{args}}
+    cargo test --all-features --test live -- --ignored --nocapture --test-threads 4 {{args}}
 
 # Build release
 build:

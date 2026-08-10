@@ -19,6 +19,10 @@ default = ["rustls-tls"]
 # TLS via rustls. Disable to supply your own reqwest::Client through
 # ClientBuilder::http_client, which is also how to get native-tls or a proxy.
 rustls-tls = ["reqwest/rustls"]
+# Probe values for characterizing what the API rewrites on storage. Data only, no
+# dependencies, #[doc(hidden)], and not covered by semver. Off by default because it is
+# research shared with downstream test suites rather than part of the client's interface.
+probes = []
 
 [dependencies]
 async-stream = "0.3.6"

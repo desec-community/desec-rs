@@ -147,6 +147,13 @@ pub mod api;
 mod client;
 mod error;
 mod page;
+// Research data for characterizing the API's canonicalization, shared with downstream
+// consumers that compare stored records against desired ones. Hidden and off by default:
+// it is not part of this crate's interface, and it changes whenever a live run teaches us
+// something, which is the wrong lifetime for a semver promise.
+#[cfg(feature = "probes")]
+#[doc(hidden)]
+pub mod probes;
 mod ratelimit;
 mod types;
 
