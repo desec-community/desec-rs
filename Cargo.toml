@@ -16,3 +16,11 @@ unused_must_use = "deny"
 [workspace.lints.clippy]
 expect_used = "deny"
 unwrap_used = "deny"
+
+# CI compiles one profile and this is it, so the tests run against what release does.
+# Release defaults both of these off, which would leave nothing in CI able to catch an
+# arithmetic overflow. Profiles apply only to the workspace being built, so this governs
+# this repository's own builds and never reaches anyone who depends on the crate.
+[profile.release]
+debug-assertions = true
+overflow-checks = true
