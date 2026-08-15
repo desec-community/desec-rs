@@ -29,6 +29,22 @@ fn client_with_retries(server: &MockServer, retries: u32) -> Client {
         .expect("valid client")
 }
 
+/// A client whose cheap bucket holds one call per hour, so a second one is refused outright
+/// rather than paced.
+fn client_with_one_cheap_call(server: &MockServer) -> Client {
+    Client::builder()
+        .base_url(format!("{}/api/v1", server.uri()))
+        .token(TOKEN)
+        .rate_limits(RateLimits::unlimited().with_scope(
+            Scope::DnsApiCheap,
+            [Rate::new(1, Duration::from_secs(3600)).expect("valid rate")],
+        ))
+        .max_rate_limit_wait(Duration::from_secs(1))
+        .max_retries(0)
+        .build()
+        .expect("valid client")
+}
+
 fn ok_domain() -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(domain_json("example.com"))
 }
@@ -662,17 +678,7 @@ async fn the_local_limiter_refuses_before_the_request_goes_out() {
         .expect(1)
         .mount(&server)
         .await;
-    let client = Client::builder()
-        .base_url(format!("{}/api/v1", server.uri()))
-        .token(TOKEN)
-        .rate_limits(RateLimits::unlimited().with_scope(
-            Scope::DnsApiCheap,
-            [Rate::new(1, Duration::from_secs(3600)).expect("valid rate")],
-        ))
-        .max_rate_limit_wait(Duration::from_secs(1))
-        .max_retries(0)
-        .build()
-        .expect("valid client");
+    let client = client_with_one_cheap_call(&server);
 
     client.domains().get("example.com").await.expect("a domain");
     let err = client
@@ -692,6 +698,62 @@ async fn the_local_limiter_refuses_before_the_request_goes_out() {
         "{err:?}"
     );
     // The bucket is consulted before the socket, so a refused call costs nothing upstream.
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn separately_built_clients_each_get_their_own_buckets() {
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ok_domain())
+        .expect(2)
+        .mount(&server)
+        .await;
+    let one = client_with_one_cheap_call(&server);
+    let another = client_with_one_cheap_call(&server);
+
+    one.domains().get("example.com").await.expect("a domain");
+    another
+        .domains()
+        .get("example.com")
+        .await
+        .expect("a client built on its own does not inherit another's spending");
+
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn derived_clients_pace_against_the_same_buckets() {
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ok_domain())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = client_with_one_cheap_call(&server);
+    let cloned = client.clone();
+    let reauthenticated = client.with_token("Kd8Nv2iQ-oJ4bF7xLpR1sYcTuWzA");
+
+    client.domains().get("example.com").await.expect("a domain");
+
+    for (how, derived) in [("clone", &cloned), ("with_token", &reauthenticated)] {
+        let err = derived
+            .domains()
+            .get("example.com")
+            .await
+            .expect_err("the hour's single call is already spent");
+        assert!(
+            matches!(
+                err,
+                Error::RateLimitWouldBlock {
+                    scope: Scope::DnsApiCheap,
+                    ..
+                }
+            ),
+            "{how}: {err:?}"
+        );
+    }
+
     server.verify().await;
 }
 
