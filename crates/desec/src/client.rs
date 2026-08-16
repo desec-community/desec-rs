@@ -215,6 +215,15 @@ impl Client {
         &self.inner.base
     }
 
+    /// The limits this client paces itself against.
+    ///
+    /// Test-only: it exists so a built client's limits can be asserted on directly
+    /// instead of through its `Debug` rendering.
+    #[cfg(test)]
+    pub(crate) fn rate_limits(&self) -> &RateLimits {
+        self.inner.limiter.limits()
+    }
+
     /// A client identical to this one but authenticating with a different token.
     ///
     /// Shares the connection pool and the rate-limiter state, so switching from an

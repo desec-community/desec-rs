@@ -423,6 +423,11 @@ impl Limiter {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn limits(&self) -> &RateLimits {
+        &self.limits
+    }
+
     /// Waits until every scope in `scopes` has a free slot, then claims one in each.
     ///
     /// All-or-nothing: slots are claimed under a single lock hold, so a request never
@@ -614,13 +619,39 @@ mod tests {
         assert_eq!(render(Scope::User), "2000/day");
     }
 
+    /// A client that was never told about rate limits is still expected to pace itself,
+    /// so the `Default` impl that [`crate::ClientBuilder::build`] falls back on has to be
+    /// the documented table rather than [`RateLimits::unlimited`].
+    #[test]
+    fn a_client_built_without_rate_limits_gets_the_defaults() {
+        let defaults = RateLimits::desec_defaults();
+        assert_eq!(RateLimits::default(), defaults);
+
+        let client = crate::Client::builder()
+            .token("i-T3b1h_OI-H9ab8tRS98stGtURe")
+            .build()
+            .expect("the builder defaults are valid");
+
+        assert_eq!(*client.rate_limits(), defaults);
+    }
+
     #[test]
     fn with_scope_overrides_and_clears() {
-        let limits = RateLimits::desec_defaults()
+        let defaults = RateLimits::desec_defaults();
+        let limits = defaults
+            .clone()
             .with_scope(Scope::DnsApiCheap, [rate("1/s")])
             .with_scope(Scope::User, []);
         assert_eq!(limits.rates(Scope::DnsApiCheap), [rate("1/s")]);
         assert!(limits.rates(Scope::User).is_empty());
+
+        // An override names one scope; the rest of the table has to survive it.
+        for scope in Scope::ALL {
+            if matches!(scope, Scope::DnsApiCheap | Scope::User) {
+                continue;
+            }
+            assert_eq!(limits.rates(scope), defaults.rates(scope), "{scope}");
+        }
     }
 
     /// Two requests fit in the window; the third has to wait for the first to age out.
