@@ -1,8 +1,9 @@
 //! Cursor pagination.
 //!
 //! deSEC paginates `GET /domains/`, `GET /domains/{name}/rrsets/` and
-//! `GET /auth/tokens/` at 500 items, advertising cursors in a `Link` header. Token
-//! policy lists are not paginated and are returned as plain vectors instead.
+//! `GET /auth/tokens/`, currently 500 items to a page, advertising cursors in a `Link`
+//! header. Token policy lists are not paginated and are returned as plain vectors
+//! instead.
 //!
 //! One detail governs the design: *omitting* the `cursor` parameter is what makes the
 //! API answer `400 Pagination required` once a collection exceeds a page, while
@@ -56,7 +57,7 @@ impl From<&str> for Cursor {
 /// One page of a paginated collection.
 #[derive(Debug, Clone)]
 pub struct Page<T> {
-    /// The items on this page, at most 500.
+    /// The items on this page; the server decides how many.
     pub items: Vec<T>,
     /// Cursor for the first page, when the server advertised one.
     pub first: Option<Cursor>,

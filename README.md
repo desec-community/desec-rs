@@ -60,9 +60,9 @@ a \[`Client`\] share one limiter, so concurrent tasks pace against the same buck
 
 ## Pagination
 
-`GET /domains/`, `GET /domains/{name}/rrsets/` and `GET /auth/tokens/` are paginated at
-500 items. Of these only the RRset list routinely exceeds a page. Three ways to read
-one, in increasing eagerness:
+deSEC paginates `GET /domains/`, `GET /domains/{name}/rrsets/` and `GET /auth/tokens/`,
+currently 500 items to a page. Of these only the RRset list routinely exceeds a page.
+Three ways to read one, in increasing eagerness:
 
 ```rust
 use futures_util::TryStreamExt;
