@@ -285,6 +285,39 @@ async fn query_credentials_travel_in_the_query_string() {
     assert!(query.contains(&pair("password", "tok")), "{query:?}");
 }
 
+/// `reqwest::Error` renders the URL it was working on, and here that URL can carry the
+/// token, so a connection failure is one `{:?}` away from logging the credential.
+#[tokio::test]
+async fn a_transport_failure_does_not_render_the_query_credentials() {
+    // Port 1 is privileged and outside the ephemeral range, so the connection is refused
+    // rather than answered by whatever else the test binary has bound.
+    let base = "http://127.0.0.1:1";
+
+    let client = DynDnsClient::builder()
+        .base_url(base)
+        .query_credentials("dyn-1a2b3c", TOKEN)
+        .rate_limits(RateLimits::unlimited())
+        .max_retries(0)
+        .build()
+        .expect("valid client");
+
+    let err = client
+        .update(HOST)
+        .send()
+        .await
+        .expect_err("nothing is listening");
+
+    let source = std::error::Error::source(&err)
+        .map(|source| format!("{source} {source:?}"))
+        .unwrap_or_default();
+    let rendered = format!("{err} {err:?} {source}");
+    assert!(!rendered.contains(TOKEN), "{rendered}");
+    assert!(!rendered.contains("dyn-1a2b3c"), "{rendered}");
+    assert!(!rendered.contains('?'), "{rendered}");
+    // Only the query goes; where the request was headed is what makes the failure readable.
+    assert!(rendered.contains(base), "{rendered}");
+}
+
 #[tokio::test]
 async fn update_failures_map_onto_the_classifiers() {
     for status in [401u16, 404, 400] {
