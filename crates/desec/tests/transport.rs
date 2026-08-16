@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use desec::api::domains::NewDomain;
 use desec::api::rrsets::RrsetPatch;
-use desec::{Client, Error, Rate, RateLimits, RecordType, Scope, Subname};
+use desec::{Client, ClientBuilder, Error, Rate, RateLimits, RecordType, Scope, Subname};
 use wiremock::matchers::{any, body_json, header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -17,12 +17,21 @@ const DOMAINS_PATH: &str = "/api/v1/domains/";
 const DOMAIN_PATH: &str = "/api/v1/domains/example.com/";
 const APEX_A_PATH: &str = "/api/v1/domains/example.com/rrsets/@/A/";
 
-/// A client with limits out of the way and no per-attempt timeout, so the tests that run
-/// on a paused clock cannot have a timeout fire while the socket is still working.
-fn client_with_retries(server: &MockServer, retries: u32) -> Client {
+/// Every client used by a `start_paused` test, so there is one place to get this wrong
+/// rather than one per test: such a client must not set a per-attempt timeout.
+///
+/// Tokio auto-advances virtual time whenever the runtime goes idle, and it goes idle while
+/// the socket to wiremock is in flight, so a timeout is reached before any response can
+/// arrive. `a_per_attempt_timeout_cannot_survive_a_paused_clock` holds that to be true.
+fn paused_clock_builder(server: &MockServer) -> ClientBuilder {
     Client::builder()
         .base_url(format!("{}/api/v1", server.uri()))
         .token(TOKEN)
+}
+
+/// A client with limits out of the way, for the retry tests.
+fn client_with_retries(server: &MockServer, retries: u32) -> Client {
+    paused_clock_builder(server)
         .rate_limits(RateLimits::unlimited())
         .max_retries(retries)
         .build()
@@ -474,9 +483,7 @@ async fn an_unhonoured_retry_after_does_not_wedge_later_requests() {
         .await;
 
     // Real limits, so `record_throttled` actually has buckets to write a penalty into.
-    let client = desec::Client::builder()
-        .base_url(format!("{}/api/v1", server.uri()))
-        .token(TOKEN)
+    let client = paused_clock_builder(&server)
         .max_retries(0)
         .max_rate_limit_wait(Duration::from_secs(60))
         .build()
@@ -514,9 +521,7 @@ async fn an_absurd_retry_after_does_not_panic() {
         .mount(&server)
         .await;
 
-    let client = desec::Client::builder()
-        .base_url(format!("{}/api/v1", server.uri()))
-        .token(TOKEN)
+    let client = paused_clock_builder(&server)
         .max_retries(0)
         .build()
         .expect("valid client");
@@ -527,6 +532,37 @@ async fn an_absurd_retry_after_does_not_panic() {
         .await
         .expect_err("throttled");
     assert!(err.is_rate_limited(), "{err:?}");
+}
+
+/// Why [`paused_clock_builder`] sets no timeout, kept executable so the constraint is
+/// checked rather than remembered. If this ever stops failing, tokio has changed how it
+/// advances a paused clock, and the tests above can stop tiptoeing around it.
+#[tokio::test(start_paused = true)]
+async fn a_per_attempt_timeout_cannot_survive_a_paused_clock() {
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ok_domain())
+        .mount(&server)
+        .await;
+    let client = paused_clock_builder(&server)
+        .rate_limits(RateLimits::unlimited())
+        .max_retries(0)
+        // Generous in wall-clock terms, and still reached the instant the socket blocks.
+        .timeout(Duration::from_secs(300))
+        .build()
+        .expect("valid client");
+
+    let err = client
+        .domains()
+        .get("example.com")
+        .await
+        .expect_err("the virtual clock outruns the socket");
+
+    match err {
+        // Specifically the timeout, since a connect failure would fail the request too.
+        Error::Transport(err) => assert!(err.is_timeout(), "{err:?}"),
+        other => panic!("expected a transport error, got {other:?}"),
+    }
 }
 
 /// A domain name that `url` would collapse must be rejected rather than silently
@@ -620,9 +656,7 @@ async fn a_retry_after_beyond_the_ceiling_fails_instead_of_sleeping() {
         .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "10"))
         .mount(&server)
         .await;
-    let client = Client::builder()
-        .base_url(format!("{}/api/v1", server.uri()))
-        .token(TOKEN)
+    let client = paused_clock_builder(&server)
         .rate_limits(RateLimits::unlimited())
         .max_retries(3)
         .max_retry_delay(Duration::from_secs(1))
