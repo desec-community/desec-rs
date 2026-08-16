@@ -129,15 +129,13 @@ Every request runs in a `desec.request` span carrying the method and path, with 
 for the response status, local rate-limit waits, server throttling and retries.
 Credentials are never recorded: \[`Secret`\] redacts itself in `Debug` and `Display`.
 
-## API semantics the types enforce
+## Types enforce API semantics
 
-Several of the API's rules are easy to get wrong, and each has already cost a shipped
-client a bug. Where possible the mistake is unrepresentable rather than merely
-documented:
+Make illegal states unrepresentable:
 
 - The zone apex is `@` in a URL path but `""` in a JSON body, and the API returns the
-  latter. \[`Subname`\] carries both spellings, so an RRset read from the API can be
-  written back without a translation step to forget.
+  latter. \[`Subname`\] carries both, so an RRset read from the API can be written back
+  without a translation step to forget.
 - `records: null` is a `400`, not "leave unchanged". Nothing in
   [`RrsetPatch`](api::rrsets::RrsetPatch) can serialize to `null`, and a TTL-only
   update is expressible.
@@ -154,9 +152,9 @@ documented:
 
 ## Not covered
 
-`/auth/totp/` (2FA), which the API documents only as "interface subject to change" and
-gives no field reference for, and `PATCH /domains/{name}/`, which is deprecated
-upstream.
+- `/auth/totp/` (2FA), which the API documents only as "interface subject to change" and
+  gives no field reference for,
+- `PATCH /domains/{name}/`, which is deprecated upstream.
 
 ## License
 
