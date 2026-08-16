@@ -670,6 +670,106 @@ async fn a_throttle_without_retry_after_falls_back_to_backoff() {
     assert_eq!(request_count(&server).await, 2);
 }
 
+/// `Retry-After` in its HTTP-date form, offset from the wall clock. The parse resolves the
+/// date against `Utc::now()`, which the paused test clock does not move, so the offset has
+/// to be real seconds rather than a fixed calendar date.
+fn http_date_offset_by(secs: i64) -> String {
+    let at = chrono::Utc::now() + chrono::TimeDelta::seconds(secs);
+    at.format("%a, %d %b %Y %H:%M:%S GMT").to_string()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_throttled_request_waits_out_an_http_date_retry_after_and_succeeds() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(DOMAIN_PATH))
+        .respond_with(
+            ResponseTemplate::new(429).insert_header("Retry-After", http_date_offset_by(30)),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(DOMAIN_PATH))
+        .respond_with(ok_domain())
+        .mount(&server)
+        .await;
+
+    client_with_retries(&server, 1)
+        .domains()
+        .get("example.com")
+        .await
+        .expect("a domain");
+
+    assert_eq!(request_count(&server).await, 2);
+}
+
+/// A date that parsed into nothing would be indistinguishable from one that was honoured,
+/// so the wait has to reach the caller. What the date resolves to exactly is pinned by the
+/// unit tests over the parse itself.
+#[tokio::test(start_paused = true)]
+async fn an_http_date_retry_after_surfaces_to_the_caller() {
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(
+            ResponseTemplate::new(429).insert_header("Retry-After", http_date_offset_by(3600)),
+        )
+        .mount(&server)
+        .await;
+
+    let err = client_with_retries(&server, 0)
+        .domains()
+        .get("example.com")
+        .await
+        .expect_err("throttled");
+
+    match err {
+        Error::RateLimited {
+            attempts,
+            retry_after,
+            ..
+        } => {
+            assert_eq!(attempts, 1);
+            retry_after.expect("the date parsed into a wait");
+        }
+        other => panic!("expected RateLimited, got {other:?}"),
+    }
+    assert_eq!(request_count(&server).await, 1);
+}
+
+/// A deadline that has already passed yields no wait at all rather than a zero or a
+/// wrapped-around one, so the client falls back to its own backoff.
+#[tokio::test(start_paused = true)]
+async fn an_http_date_retry_after_in_the_past_falls_back_to_backoff() {
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("Retry-After", "Wed, 21 Oct 2015 07:28:00 GMT"),
+        )
+        .mount(&server)
+        .await;
+
+    let err = client_with_retries(&server, 1)
+        .domains()
+        .get("example.com")
+        .await
+        .expect_err("throttled");
+
+    assert!(
+        matches!(
+            err,
+            Error::RateLimited {
+                attempts: 2,
+                retry_after: None,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(request_count(&server).await, 2);
+}
+
 #[tokio::test]
 async fn the_local_limiter_refuses_before_the_request_goes_out() {
     let server = MockServer::start().await;

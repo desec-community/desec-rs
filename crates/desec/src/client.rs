@@ -521,20 +521,30 @@ impl Res {
     }
 
     /// `Retry-After` as a duration, accepting both forms the HTTP spec allows.
-    ///
-    /// Clamped to [`MAX_RETRY_AFTER`]. The header is attacker- or proxy-controlled and
-    /// otherwise unbounded, and the value reaches `Instant` arithmetic, which panics on
-    /// overflow.
     fn retry_after(&self) -> Option<Duration> {
-        let raw = self.header(header::RETRY_AFTER)?.trim().to_owned();
-        if let Ok(secs) = raw.parse::<u64>() {
-            return Some(Duration::from_secs(secs).min(MAX_RETRY_AFTER));
-        }
-        // An HTTP-date, which deSEC does not currently send but the spec permits.
-        let deadline = chrono::DateTime::parse_from_rfc2822(&raw).ok()?;
-        let delta = deadline.signed_duration_since(chrono::Utc::now());
-        Some(delta.to_std().ok()?.min(MAX_RETRY_AFTER))
+        let raw = self.header(header::RETRY_AFTER)?;
+        parse_retry_after(raw, chrono::Utc::now())
     }
+}
+
+/// `Retry-After` as a duration, with the date form resolved against `now`.
+///
+/// Clamped to [`MAX_RETRY_AFTER`]. The header is attacker- or proxy-controlled and
+/// otherwise unbounded, and the value reaches `Instant` arithmetic, which panics on
+/// overflow. A deadline already in the past yields `None`, leaving the caller on its own
+/// backoff.
+///
+/// `now` is a parameter rather than a call to the wall clock so the date form can be
+/// pinned in tests.
+fn parse_retry_after(raw: &str, now: chrono::DateTime<chrono::Utc>) -> Option<Duration> {
+    let raw = raw.trim();
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(secs).min(MAX_RETRY_AFTER));
+    }
+    // An HTTP-date, which deSEC does not currently send but the spec permits.
+    let deadline = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
+    let delta = deadline.signed_duration_since(now);
+    Some(delta.to_std().ok()?.min(MAX_RETRY_AFTER))
 }
 
 /// Builds a [`Client`].
@@ -810,6 +820,56 @@ mod tests {
             .expect("basic auth sends a header")
             .expect("valid header value");
         assert_eq!(header.to_str().expect("ascii"), "Basic dXNlcjpwYXNz");
+    }
+
+    fn utc(rfc2822: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc2822(rfc2822)
+            .expect("a well-formed RFC 2822 date")
+            .to_utc()
+    }
+
+    #[test]
+    fn retry_after_resolves_an_http_date_against_the_given_now() {
+        let now = utc("Wed, 21 Oct 2015 07:28:00 GMT");
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2015 07:28:30 GMT", now),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            parse_retry_after("  Wed, 21 Oct 2015 08:28:00 GMT  ", now),
+            Some(Duration::from_secs(3600))
+        );
+        assert_eq!(
+            parse_retry_after("Mon, 21 Oct 2115 07:28:00 GMT", now),
+            Some(MAX_RETRY_AFTER)
+        );
+    }
+
+    #[test]
+    fn retry_after_reads_the_seconds_form() {
+        let now = utc("Wed, 21 Oct 2015 07:28:00 GMT");
+        assert_eq!(parse_retry_after("30", now), Some(Duration::from_secs(30)));
+        assert_eq!(parse_retry_after(" 0 ", now), Some(Duration::ZERO));
+        assert_eq!(parse_retry_after("999999999", now), Some(MAX_RETRY_AFTER));
+    }
+
+    /// A deadline that has already passed is no wait at all, not a zero and not a
+    /// wrapped-around one, so the caller falls back to its own backoff.
+    #[test]
+    fn retry_after_rejects_a_date_in_the_past() {
+        let now = utc("Wed, 21 Oct 2015 07:28:00 GMT");
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2015 06:28:00 GMT", now),
+            None
+        );
+    }
+
+    #[test]
+    fn retry_after_rejects_a_malformed_value() {
+        let now = utc("Wed, 21 Oct 2015 07:28:00 GMT");
+        for raw in ["", "soon", "-30", "30s", "2015-10-21T07:28:30Z"] {
+            assert_eq!(parse_retry_after(raw, now), None, "{raw:?}");
+        }
     }
 
     #[test]
