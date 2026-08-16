@@ -801,6 +801,41 @@ async fn the_local_limiter_refuses_before_the_request_goes_out() {
     server.verify().await;
 }
 
+/// The other half of the promise: a wait the budget allows ends in the request going out,
+/// not in an error. Real clock and a sub-second window, because a paused one cannot be
+/// mixed with the socket to wiremock.
+#[tokio::test]
+async fn a_wait_inside_the_budget_ends_in_the_request_going_out() {
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ok_domain())
+        .expect(3)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(format!("{}/api/v1", server.uri()))
+        .token(TOKEN)
+        .rate_limits(RateLimits::unlimited().with_scope(
+            Scope::DnsApiCheap,
+            [Rate::new(2, Duration::from_millis(300)).expect("valid rate")],
+        ))
+        .max_rate_limit_wait(Duration::from_secs(5))
+        .max_retries(0)
+        .build()
+        .expect("valid client");
+
+    let start = std::time::Instant::now();
+    for _ in 0..3 {
+        client.domains().get("example.com").await.expect("a domain");
+    }
+    let elapsed = start.elapsed();
+
+    // A lower bound only. An upper one would flake under load, and what is being pinned is
+    // that the third call waited out the window instead of being refused.
+    assert!(elapsed >= Duration::from_millis(300), "{elapsed:?}");
+    server.verify().await;
+}
+
 #[tokio::test]
 async fn separately_built_clients_each_get_their_own_buckets() {
     let server = MockServer::start().await;
