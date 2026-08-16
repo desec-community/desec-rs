@@ -581,11 +581,37 @@ mod tests {
         assert!(!json(&patch).contains("perm_write"));
     }
 
+    /// Every selector is three-state: omitting leaves it alone, a value narrows the policy,
+    /// and an explicit null widens it to match anything.
     #[test]
-    fn widening_a_policy_selector_sends_null() {
+    fn policy_selectors_distinguish_leaving_alone_from_widening_and_narrowing() {
+        assert_eq!(json(&TokenPolicyPatch::new()), "{}");
+
         assert_eq!(
             json(&TokenPolicyPatch::new().any_domain()),
             r#"{"domain":null}"#
+        );
+        assert_eq!(
+            json(&TokenPolicyPatch::new().domain("example.com")),
+            r#"{"domain":"example.com"}"#
+        );
+
+        assert_eq!(
+            json(&TokenPolicyPatch::new().any_subname()),
+            r#"{"subname":null}"#
+        );
+        assert_eq!(
+            json(&TokenPolicyPatch::new().subname(Subname::apex())),
+            r#"{"subname":""}"#
+        );
+
+        assert_eq!(
+            json(&TokenPolicyPatch::new().any_record_type()),
+            r#"{"type":null}"#
+        );
+        assert_eq!(
+            json(&TokenPolicyPatch::new().record_type(RecordType::TXT)),
+            r#"{"type":"TXT"}"#
         );
     }
 
