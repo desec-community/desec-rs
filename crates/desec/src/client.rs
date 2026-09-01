@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use reqwest::header::{self, HeaderMap, HeaderValue};
@@ -176,13 +177,18 @@ struct Inner {
     /// same buckets: the account and the source address are what the server throttles, not
     /// the individual credential.
     limiter: Arc<Limiter>,
+    /// Every attempt the limiter admitted, shared for the same reason `limiter` is. The
+    /// limiter's own windows expire by design, so they cannot answer how much of the
+    /// account's daily allowance has gone.
+    requests: Arc<AtomicU64>,
     retry: RetryConfig,
 }
 
 /// An asynchronous deSEC API client.
 ///
-/// Cheap to clone: clones share one connection pool and one rate-limiter state, which is
-/// what makes the client-side limits meaningful across concurrent tasks.
+/// Cheap to clone: clones share one connection pool, one rate-limiter state and one
+/// request count, which is what makes the client-side limits meaningful across concurrent
+/// tasks.
 ///
 /// ```no_run
 /// # async fn run() -> Result<(), desec::Error> {
@@ -224,10 +230,25 @@ impl Client {
         self.inner.limiter.limits()
     }
 
+    /// How many HTTP requests this client has sent since it was built.
+    ///
+    /// Attempts, not operations: a retry, a throttle replay and each page of a paginated
+    /// walk are separate requests, and deSEC's account-wide allowance of 2000
+    /// authenticated requests a day is spent in those. A caller counting its own calls
+    /// cannot see the difference; only this layer knows a request went out.
+    ///
+    /// Requests the local limiter refuses are not counted, because they never reached the
+    /// network. Clones and clients derived by [`with_token`](Self::with_token) share one
+    /// total, exactly as they share one limiter.
+    pub fn requests_made(&self) -> u64 {
+        self.inner.requests.load(Ordering::Relaxed)
+    }
+
     /// A client identical to this one but authenticating with a different token.
     ///
-    /// Shares the connection pool and the rate-limiter state, so switching from an
-    /// unauthenticated client to a login token does not reset the buckets:
+    /// Shares the connection pool, the rate-limiter state and the request count, so
+    /// switching from an unauthenticated client to a login token does not reset the
+    /// buckets:
     ///
     /// ```no_run
     /// # async fn run() -> Result<(), desec::Error> {
@@ -248,6 +269,7 @@ impl Client {
                 base: self.inner.base.clone(),
                 auth: Auth::Token(token.into()),
                 limiter: Arc::clone(&self.inner.limiter),
+                requests: Arc::clone(&self.inner.requests),
                 retry: self.inner.retry.clone(),
             }),
         }
@@ -347,6 +369,9 @@ impl Client {
             loop {
                 attempt += 1;
                 self.inner.limiter.acquire(&scopes).await?;
+                // After the limiter admits the attempt, so a call refused locally is not
+                // counted against an allowance it never spent.
+                self.inner.requests.fetch_add(1, Ordering::Relaxed);
 
                 let mut builder = self.inner.http.request(method.clone(), url.clone());
                 if let Some(body) = &body {
@@ -696,6 +721,7 @@ impl ClientBuilder {
                 base,
                 auth: self.auth,
                 limiter: Arc::new(Limiter::new(limits, max_wait)),
+                requests: Arc::new(AtomicU64::new(0)),
                 retry: self.retry,
             }),
         })

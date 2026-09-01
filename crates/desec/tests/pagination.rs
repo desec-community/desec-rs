@@ -199,6 +199,31 @@ async fn all_walks_every_page_exactly_once() {
     server.verify().await;
 }
 
+/// A walk is one call for the caller and N requests for the account, and only the client
+/// is in a position to know which. Counting at the call site under-reports every page but
+/// the first.
+#[tokio::test]
+async fn every_page_of_a_walk_counts_as_a_request() {
+    let (server, client) = mock().await;
+    list_page("")
+        .respond_with(page_response(&server, &["a", "b"], Some("p2")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    list_page("p2")
+        .respond_with(page_response(&server, &["c"], None))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let items = client.rrsets(DOMAIN).list().all().await.expect("all items");
+
+    assert_eq!(subnames(&items), ["a", "b", "c"]);
+    assert_eq!(request_count(&server).await, 2);
+    assert_eq!(client.requests_made(), 2);
+    server.verify().await;
+}
+
 #[tokio::test]
 async fn a_page_of_the_full_size_is_walked_whole() {
     let (server, client) = mock().await;

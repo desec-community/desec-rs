@@ -1,4 +1,4 @@
-//! Authentication, error mapping, retries and rate limiting on the wire.
+//! Authentication, error mapping, retries, rate limiting and request counting on the wire.
 #![allow(clippy::expect_used)]
 
 mod common;
@@ -984,4 +984,79 @@ async fn rrset_reads_and_writes_draw_on_separate_scopes() {
         "{err:?}"
     );
     assert_eq!(request_count(&server).await, 2);
+}
+
+/// Each attempt is its own request upstream, so a retried call spends three of the
+/// account's daily budget while the caller made one call.
+#[tokio::test(start_paused = true)]
+async fn every_retry_attempt_counts_as_a_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(DOMAIN_PATH))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(DOMAIN_PATH))
+        .respond_with(ok_domain())
+        .mount(&server)
+        .await;
+    let client = client_with_retries(&server, 2);
+
+    client.domains().get("example.com").await.expect("a domain");
+
+    assert_eq!(request_count(&server).await, 3);
+    assert_eq!(client.requests_made(), 3);
+}
+
+/// The count follows the limiter's ownership, because what it measures belongs to the
+/// account rather than to the handle that spent it.
+#[tokio::test]
+async fn derived_clients_count_against_the_same_total() {
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ok_domain())
+        .mount(&server)
+        .await;
+    let client = client_with_retries(&server, 0);
+    let cloned = client.clone();
+    let reauthenticated = client.with_token("Kd8Nv2iQ-oJ4bF7xLpR1sYcTuWzA");
+
+    for handle in [&client, &cloned, &reauthenticated] {
+        handle.domains().get("example.com").await.expect("a domain");
+    }
+
+    for (how, handle) in [
+        ("original", &client),
+        ("clone", &cloned),
+        ("with_token", &reauthenticated),
+    ] {
+        assert_eq!(handle.requests_made(), 3, "{how}");
+    }
+    // A client built on its own starts at nothing, just as it gets its own buckets.
+    assert_eq!(client_with_retries(&server, 0).requests_made(), 0);
+}
+
+/// A call the local limiter refuses never reaches the socket, so counting it would
+/// over-report a budget it did not spend.
+#[tokio::test]
+async fn a_locally_refused_call_is_not_counted() {
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ok_domain())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = client_with_one_cheap_call(&server);
+
+    client.domains().get("example.com").await.expect("a domain");
+    client
+        .domains()
+        .get("example.com")
+        .await
+        .expect_err("the local limiter refuses");
+
+    assert_eq!(client.requests_made(), 1);
+    server.verify().await;
 }

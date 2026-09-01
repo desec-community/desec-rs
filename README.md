@@ -58,6 +58,11 @@ let client = Client::builder()
 Pass \[`RateLimits::unlimited`\] to opt out and handle `429`s reactively only. Clones of
 a \[`Client`\] share one limiter, so concurrent tasks pace against the same buckets.
 
+Those limits are rates over a window, but the account also has a flat allowance of 2000
+authenticated requests a day. \[`Client::requests_made`\] reports what has been spent
+against it, counting attempts rather than calls: a caller cannot see that one `all()`
+was five pages, or that one write was retried twice, and the client can.
+
 ## Pagination
 
 deSEC paginates `GET /domains/`, `GET /domains/{name}/rrsets/` and `GET /auth/tokens/`,
