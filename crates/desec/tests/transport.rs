@@ -539,12 +539,20 @@ async fn an_absurd_retry_after_does_not_panic() {
 /// advances a paused clock, and the tests above can stop tiptoeing around it.
 #[tokio::test(start_paused = true)]
 async fn a_per_attempt_timeout_cannot_survive_a_paused_clock() {
-    let server = MockServer::start().await;
-    Mock::given(any())
-        .respond_with(ok_domain())
-        .mount(&server)
-        .await;
-    let client = paused_clock_builder(&server)
+    // A listener that accepts and never answers, rather than wiremock, which replies from
+    // its own runtime in real time and would race the clock into flaking.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = listener.local_addr().expect("a bound address");
+    std::thread::spawn(move || {
+        let mut connected = Vec::new();
+        while let Ok((socket, _)) = listener.accept() {
+            connected.push(socket);
+        }
+    });
+
+    let client = Client::builder()
+        .base_url(format!("http://{addr}/api/v1"))
+        .token(TOKEN)
         .rate_limits(RateLimits::unlimited())
         .max_retries(0)
         // Generous in wall-clock terms, and still reached the instant the socket blocks.
