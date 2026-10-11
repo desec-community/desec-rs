@@ -1,8 +1,12 @@
 # desec
 
-An async client for the [deSEC.io] DNS API, covering the whole documented surface:
-domains, DNS records, tokens with their scoping policies, the account lifecycle, and
-the dynDNS update protocol.
+An async client for the [deSEC.io] DNS API, covering the whole documented surface: domains, DNS
+records, tokens with their scoping policies, the account lifecycle, and the dynDNS update
+protocol.
+
+This library is [extensively tested][tests] and provides the foundation for various webhooks and
+providers, such as [external-dns-desec-webhook-rs][webhook]. But we welcome feedback in terms of
+user experience reports, bug reports, feature requests.
 
 ## Getting started
 
@@ -157,8 +161,7 @@ Make illegal states unrepresentable:
 
 ## Not covered
 
-- `/auth/totp/` (2FA), which the API documents only as "interface subject to change" and
-  gives no field reference for,
+- `/auth/totp/` (2FA), which is unstable, undocumented, and subject to change.
 - `PATCH /domains/{name}/`, which is deprecated upstream.
 
 ## License
@@ -167,3 +170,5 @@ Make illegal states unrepresentable:
 - MIT license ([LICENSE-MIT](LICENSE-MIT))
 
 [desec.io]: https://desec.io
+[tests]: https://github.com/desec-community/desec-rs/tree/main/crates/desec/tests
+[webhook]: https://github.com/desec-community/external-dns-desec-webhook-rs
